@@ -2,45 +2,58 @@ use std::os::fd::AsRawFd;
 
 use nix::libc;
 
-use crate::error::BotError;
+use crate::error::IsolaError;
+
+/// Check whether newuidmap and newgidmap are available on this system.
+pub fn has_uidmap_tools() -> bool {
+    ["newuidmap", "newgidmap"].iter().all(|bin| {
+        std::process::Command::new("which")
+            .arg(bin)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+}
 
 /// Parse /etc/subuid or /etc/subgid for the current user, return (start, count)
-pub fn parse_subordinate_ids(path: &str) -> Result<(u32, u32), BotError> {
+pub fn parse_subordinate_ids(path: &str) -> Result<(u32, u32), IsolaError> {
     let username = std::env::var("USER")
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_else(|_| "nobody".to_string());
     let uid_str = nix::unistd::getuid().as_raw().to_string();
 
     let content = std::fs::read_to_string(path)
-        .map_err(|e| BotError::NamespaceError(format!("Failed to read {path}: {e}")))?;
+        .map_err(|e| IsolaError::NamespaceError(format!("Failed to read {path}: {e}")))?;
 
     for line in content.lines() {
         let parts: Vec<&str> = line.split(':').collect();
         if parts.len() >= 3 && (parts[0] == username || parts[0] == uid_str) {
             let start: u32 = parts[1].parse().map_err(|_| {
-                BotError::NamespaceError(format!("Invalid subordinate ID in {path}"))
+                IsolaError::NamespaceError(format!("Invalid subordinate ID in {path}"))
             })?;
             let count: u32 = parts[2].parse().map_err(|_| {
-                BotError::NamespaceError(format!("Invalid subordinate count in {path}"))
+                IsolaError::NamespaceError(format!("Invalid subordinate count in {path}"))
             })?;
             return Ok((start, count));
         }
     }
 
-    Err(BotError::NamespaceError(format!(
+    Err(IsolaError::NamespaceError(format!(
         "No subordinate ID range found for user '{username}' in {path}. \
          Add an entry with: sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 {username}"
     )))
 }
 
 /// Write UID/GID mappings for a child process in a new user namespace.
-/// If `multi_uid` is true, uses newuidmap/newgidmap for full UID range.
-/// Otherwise, writes a single-UID mapping directly.
-pub fn write_id_mappings(child_pid: i32, multi_uid: bool) -> Result<(), BotError> {
+/// If `multi_uid` is true, tries newuidmap/newgidmap for full UID range.
+/// Returns `true` if multi-UID mapping was applied, `false` if single-UID fallback was used.
+pub fn write_id_mappings(child_pid: i32, multi_uid: bool) -> Result<bool, IsolaError> {
     let uid = nix::unistd::getuid().as_raw();
     let gid = nix::unistd::getgid().as_raw();
 
-    if multi_uid {
+    if multi_uid && has_uidmap_tools() {
         let (sub_uid_start, sub_uid_count) = parse_subordinate_ids("/etc/subuid")?;
         let (sub_gid_start, sub_gid_count) = parse_subordinate_ids("/etc/subgid")?;
 
@@ -71,13 +84,13 @@ pub fn write_id_mappings(child_pid: i32, multi_uid: bool) -> Result<(), BotError
             ])
             .status()
             .map_err(|e| {
-                BotError::NamespaceError(format!(
+                IsolaError::NamespaceError(format!(
                     "Failed to run newuidmap: {e}. Install with: sudo apt install uidmap"
                 ))
             })?;
 
         if !uid_status.success() {
-            return Err(BotError::NamespaceError(
+            return Err(IsolaError::NamespaceError(
                 "newuidmap failed. Check /etc/subuid configuration.".into(),
             ));
         }
@@ -101,37 +114,42 @@ pub fn write_id_mappings(child_pid: i32, multi_uid: bool) -> Result<(), BotError
             ])
             .status()
             .map_err(|e| {
-                BotError::NamespaceError(format!(
+                IsolaError::NamespaceError(format!(
                     "Failed to run newgidmap: {e}. Install with: sudo apt install uidmap"
                 ))
             })?;
 
         if !gid_status.success() {
-            return Err(BotError::NamespaceError(
+            return Err(IsolaError::NamespaceError(
                 "newgidmap failed. Check /etc/subgid configuration.".into(),
             ));
         }
-    } else {
-        std::fs::write(format!("/proc/{child_pid}/setgroups"), "deny\n")?;
-        std::fs::write(format!("/proc/{child_pid}/uid_map"), format!("0 {uid} 1\n"))?;
-        std::fs::write(format!("/proc/{child_pid}/gid_map"), format!("0 {gid} 1\n"))?;
+        return Ok(true);
     }
 
-    Ok(())
+    if multi_uid {
+        eprintln!("Warning: newuidmap/newgidmap not found, falling back to single-UID mapping");
+    }
+
+    std::fs::write(format!("/proc/{child_pid}/setgroups"), "deny\n")?;
+    std::fs::write(format!("/proc/{child_pid}/uid_map"), format!("0 {uid} 1\n"))?;
+    std::fs::write(format!("/proc/{child_pid}/gid_map"), format!("0 {gid} 1\n"))?;
+
+    Ok(false)
 }
 
 /// Write multi-UID mappings for a child process, falling back to single-UID on failure.
 /// Used for best-effort operations like cleanup where failure is acceptable.
 pub fn write_id_mappings_best_effort(child_pid: i32) {
     // Try multi-UID first; on any failure fall back to single-UID mapping
-    if write_id_mappings(child_pid, true).is_err() {
+    if let Err(_) = write_id_mappings(child_pid, true) {
         let _ = write_id_mappings(child_pid, false);
     }
 }
 
 /// Run a closure in a new user namespace. The closure runs as UID 0 (mapped to the
 /// caller's host UID). Returns the child's exit code on success.
-pub fn run_in_userns<F>(child_fn: F, multi_uid_strict: bool) -> Result<i32, BotError>
+pub fn run_in_userns<F>(child_fn: F, multi_uid_strict: bool) -> Result<i32, IsolaError>
 where
     F: FnOnce() -> i32 + Send + 'static,
 {
@@ -190,7 +208,7 @@ where
     if child_pid < 0 {
         // Reclaim the closure to avoid leak
         unsafe { drop(Box::from_raw(fn_ptr)) };
-        return Err(BotError::NamespaceError(format!(
+        return Err(IsolaError::NamespaceError(format!(
             "clone() failed: {}",
             std::io::Error::last_os_error()
         )));
@@ -199,7 +217,7 @@ where
     drop(pipe_read);
 
     if multi_uid_strict {
-        write_id_mappings(child_pid, true)?;
+        let _ = write_id_mappings(child_pid, true)?;
     } else {
         write_id_mappings_best_effort(child_pid);
     }

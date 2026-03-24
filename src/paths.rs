@@ -1,13 +1,13 @@
 use std::path::PathBuf;
 
-pub fn bot_home() -> PathBuf {
+pub fn isola_home() -> PathBuf {
     let home = std::env::var("HOME")
         .expect("HOME environment variable not set — cannot determine config directory");
-    PathBuf::from(home).join(".bot")
+    PathBuf::from(home).join(".isola")
 }
 
 pub fn sandboxes_dir() -> PathBuf {
-    bot_home().join("sandboxes")
+    isola_home().join("sandboxes")
 }
 
 pub fn sandbox_dir(name: &str) -> PathBuf {
@@ -23,11 +23,11 @@ pub fn config_path(name: &str) -> PathBuf {
 }
 
 pub fn cache_dir() -> PathBuf {
-    bot_home().join("cache")
+    isola_home().join("cache")
 }
 
 pub fn session_dir() -> PathBuf {
-    bot_home().join("session")
+    isola_home().join("session")
 }
 
 pub fn session_credentials() -> PathBuf {
@@ -39,15 +39,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bot_home_is_under_home() {
+    fn isola_home_is_under_home() {
         let home = std::env::var("HOME").unwrap();
-        let bot = bot_home();
-        assert_eq!(bot, PathBuf::from(home).join(".bot"));
+        let dir = isola_home();
+        assert_eq!(dir, PathBuf::from(home).join(".isola"));
     }
 
     #[test]
-    fn sandboxes_dir_is_under_bot_home() {
-        assert_eq!(sandboxes_dir(), bot_home().join("sandboxes"));
+    fn sandboxes_dir_is_under_isola_home() {
+        assert_eq!(sandboxes_dir(), isola_home().join("sandboxes"));
     }
 
     #[test]
@@ -69,13 +69,13 @@ mod tests {
     }
 
     #[test]
-    fn cache_dir_is_under_bot_home() {
-        assert_eq!(cache_dir(), bot_home().join("cache"));
+    fn cache_dir_is_under_isola_home() {
+        assert_eq!(cache_dir(), isola_home().join("cache"));
     }
 
     #[test]
-    fn session_dir_is_under_bot_home() {
-        assert_eq!(session_dir(), bot_home().join("session"));
+    fn session_dir_is_under_isola_home() {
+        assert_eq!(session_dir(), isola_home().join("session"));
     }
 
     #[test]

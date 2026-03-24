@@ -25,7 +25,7 @@ fn main() {
                 Some(n) => n,
                 None => {
                     eprintln!(
-                        "error: no sandbox found for current directory. Create one first with: bot"
+                        "error: no sandbox found for current directory. Create one first with: isola"
                     );
                     std::process::exit(1);
                 }
@@ -48,7 +48,7 @@ fn main() {
         Some(Commands::Destroy { name }) => commands::destroy::run(&name),
         Some(Commands::List) => commands::list::run(),
         Some(Commands::Completions { shell }) => {
-            clap_complete::generate(shell, &mut Cli::command(), "bot", &mut std::io::stdout());
+            clap_complete::generate(shell, &mut Cli::command(), "isola", &mut std::io::stdout());
             Ok(())
         }
         None => commands::default::run(),

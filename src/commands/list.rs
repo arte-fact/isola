@@ -1,9 +1,9 @@
 use crate::commands::status::{dir_size, format_size};
-use crate::error::BotError;
+use crate::error::IsolaError;
 use crate::paths;
 use crate::sandbox::config::SandboxConfig;
 
-pub fn run() -> Result<(), BotError> {
+pub fn run() -> Result<(), IsolaError> {
     let sandboxes_dir = paths::sandboxes_dir();
     if !sandboxes_dir.exists() {
         eprintln!("No sandboxes found");

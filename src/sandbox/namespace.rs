@@ -5,12 +5,12 @@ use std::path::Path;
 
 use nix::libc;
 
-use crate::error::BotError;
+use crate::error::IsolaError;
 use crate::sandbox::mounts;
 use crate::sandbox::userns;
 
-fn to_cstring(s: &str, label: &str) -> Result<CString, BotError> {
-    CString::new(s).map_err(|_| BotError::NamespaceError(format!("{label} contains a null byte")))
+fn to_cstring(s: &str, label: &str) -> Result<CString, IsolaError> {
+    CString::new(s).map_err(|_| IsolaError::NamespaceError(format!("{label} contains a null byte")))
 }
 
 /// What to execute inside the sandbox
@@ -39,7 +39,7 @@ struct ChildArgs {
     run_as_uid: Option<u32>,
 }
 
-pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, BotError> {
+pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, IsolaError> {
     let child_args = ChildArgs {
         sync_pipe_read: -1,
         sync_pipe_write: -1,
@@ -106,7 +106,7 @@ pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, BotError> {
     };
 
     if child_pid < 0 {
-        return Err(BotError::NamespaceError(format!(
+        return Err(IsolaError::NamespaceError(format!(
             "clone() failed: {}",
             std::io::Error::last_os_error()
         )));
@@ -116,9 +116,10 @@ pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, BotError> {
     drop(pipe_read);
 
     // Write UID/GID mappings via shared helper
-    userns::write_id_mappings(child_pid, exec.multi_uid)?;
+    let got_multi_uid = userns::write_id_mappings(child_pid, exec.multi_uid)?;
 
-    // Signal child by closing write end
+    // Signal child: 1 = multi-UID active, 0 = single-UID fallback
+    nix::unistd::write(&pipe_write, &[if got_multi_uid { 1u8 } else { 0u8 }])?;
     drop(pipe_write);
 
     // Wait for child
@@ -141,21 +142,21 @@ extern "C" fn child_entry(arg: *mut libc::c_void) -> libc::c_int {
     }
 }
 
-fn child_main(args: &ChildArgs) -> Result<(), BotError> {
+fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
     // Close our copy of the write end first — otherwise read() blocks forever
     nix::unistd::close(args.sync_pipe_write).ok();
 
-    // Wait for parent to write uid_map/gid_map
-    {
-        let mut buf = [0u8; 1];
-        nix::unistd::read(args.sync_pipe_read, &mut buf).ok();
-        nix::unistd::close(args.sync_pipe_read).ok();
-    }
+    // Wait for parent to write uid_map/gid_map.
+    // The byte value signals: 1 = multi-UID active, 0 = single-UID fallback.
+    let mut buf = [0u8; 1];
+    let n = nix::unistd::read(args.sync_pipe_read, &mut buf).unwrap_or(0);
+    nix::unistd::close(args.sync_pipe_read).ok();
+    let got_multi_uid = n == 1 && buf[0] == 1;
 
     let rootfs_str = args
         .rootfs
         .to_str()
-        .map_err(|_| BotError::NamespaceError("rootfs path is not valid UTF-8".into()))?;
+        .map_err(|_| IsolaError::NamespaceError("rootfs path is not valid UTF-8".into()))?;
     let rootfs = Path::new(rootfs_str);
 
     // Set up mounts
@@ -178,12 +179,14 @@ fn child_main(args: &ChildArgs) -> Result<(), BotError> {
     // pivot_root
     do_pivot_root(rootfs)?;
 
-    // Drop to non-root user if requested
+    // Drop to non-root user if requested (only possible with multi-UID mapping)
     if let Some(uid) = args.run_as_uid {
-        nix::unistd::setgid(nix::unistd::Gid::from_raw(uid))
-            .map_err(|e| BotError::NamespaceError(format!("setgid({uid}) failed: {e}")))?;
-        nix::unistd::setuid(nix::unistd::Uid::from_raw(uid))
-            .map_err(|e| BotError::NamespaceError(format!("setuid({uid}) failed: {e}")))?;
+        if got_multi_uid {
+            nix::unistd::setgid(nix::unistd::Gid::from_raw(uid))
+                .map_err(|e| IsolaError::NamespaceError(format!("setgid({uid}) failed: {e}")))?;
+            nix::unistd::setuid(nix::unistd::Uid::from_raw(uid))
+                .map_err(|e| IsolaError::NamespaceError(format!("setuid({uid}) failed: {e}")))?;
+        }
     }
 
     // Start in /workspace if it exists
@@ -197,7 +200,7 @@ fn child_main(args: &ChildArgs) -> Result<(), BotError> {
     unreachable!()
 }
 
-fn do_pivot_root(rootfs: &Path) -> Result<(), BotError> {
+fn do_pivot_root(rootfs: &Path) -> Result<(), IsolaError> {
     nix::unistd::chdir(rootfs)?;
 
     let old_root = rootfs.join(".old_root");

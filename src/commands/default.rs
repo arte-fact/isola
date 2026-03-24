@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use crate::error::BotError;
+use crate::error::IsolaError;
 use crate::paths;
 use crate::sandbox::config::SandboxConfig;
 
 /// Default command: auto-detect sandbox for cwd, or launch setup wizard
-pub fn run() -> Result<(), BotError> {
+pub fn run() -> Result<(), IsolaError> {
     match detect_sandbox()? {
         Some(name) => {
             eprintln!("Entering sandbox '{name}'...");
@@ -17,12 +17,12 @@ pub fn run() -> Result<(), BotError> {
 }
 
 /// Scan all sandbox configs to find one whose workspace matches cwd
-pub fn detect_sandbox() -> Result<Option<String>, BotError> {
+pub fn detect_sandbox() -> Result<Option<String>, IsolaError> {
     let cwd = std::env::current_dir()?;
     find_sandbox_for_path(&cwd)
 }
 
-fn find_sandbox_for_path(cwd: &Path) -> Result<Option<String>, BotError> {
+fn find_sandbox_for_path(cwd: &Path) -> Result<Option<String>, IsolaError> {
     let sandboxes_dir = paths::sandboxes_dir();
     if !sandboxes_dir.exists() {
         return Ok(None);

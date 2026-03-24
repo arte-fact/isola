@@ -1,11 +1,11 @@
-use crate::error::BotError;
+use crate::error::IsolaError;
 use crate::paths;
 use crate::sandbox::config::SandboxConfig;
 
-pub fn run(name: &str) -> Result<(), BotError> {
+pub fn run(name: &str) -> Result<(), IsolaError> {
     let sandbox_dir = paths::sandbox_dir(name);
     if !sandbox_dir.exists() {
-        return Err(BotError::SandboxNotFound(name.to_string()));
+        return Err(IsolaError::SandboxNotFound(name.to_string()));
     }
 
     let config = SandboxConfig::load(name)?;

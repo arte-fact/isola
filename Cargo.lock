@@ -104,24 +104,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
-name = "bot"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "clap",
- "clap_complete",
- "flate2",
- "indicatif",
- "inquire",
- "nix",
- "reqwest",
- "serde",
- "serde_json",
- "tar",
- "thiserror",
-]
-
-[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -864,6 +846,24 @@ name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+
+[[package]]
+name = "isola"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "clap_complete",
+ "flate2",
+ "indicatif",
+ "inquire",
+ "nix",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tar",
+ "thiserror",
+]
 
 [[package]]
 name = "itoa"

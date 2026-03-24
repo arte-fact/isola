@@ -1,11 +1,11 @@
-use crate::error::BotError;
+use crate::error::IsolaError;
 use crate::paths;
 use crate::sandbox::userns;
 
-pub fn run(name: &str) -> Result<(), BotError> {
+pub fn run(name: &str) -> Result<(), IsolaError> {
     let sandbox_dir = paths::sandbox_dir(name);
     if !sandbox_dir.exists() {
-        return Err(BotError::SandboxNotFound(name.to_string()));
+        return Err(IsolaError::SandboxNotFound(name.to_string()));
     }
 
     // Files may be owned by subordinate UIDs. Use a lightweight user namespace
@@ -32,7 +32,7 @@ pub fn run(name: &str) -> Result<(), BotError> {
         Err(e) => {
             eprintln!("Warning: some files could not be deleted: {e}");
             eprintln!("Try: rm -rf {}", sandbox_dir.display());
-            Err(BotError::Io(e))
+            Err(IsolaError::Io(e))
         }
     }
 }

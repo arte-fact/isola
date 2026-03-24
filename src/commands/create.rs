@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use chrono::Utc;
 
-use crate::error::BotError;
+use crate::error::IsolaError;
 use crate::paths;
 use crate::sandbox::config::SandboxConfig;
 use crate::sandbox::rootfs;
@@ -11,7 +11,7 @@ use crate::sandbox::rootfs;
 pub const ALL_ENVIRONMENTS: &[&str] = &["rust", "nodejs", "python-uv", "go"];
 
 /// Create a sandbox with all environments (backward-compatible CLI)
-pub fn run(name: &str, workspace: Option<PathBuf>) -> Result<(), BotError> {
+pub fn run(name: &str, workspace: Option<PathBuf>) -> Result<(), IsolaError> {
     let envs: Vec<String> = ALL_ENVIRONMENTS.iter().map(|s| s.to_string()).collect();
     run_with_envs(name, workspace, &envs)
 }
@@ -21,13 +21,13 @@ pub fn run_with_envs(
     name: &str,
     workspace: Option<PathBuf>,
     environments: &[String],
-) -> Result<(), BotError> {
+) -> Result<(), IsolaError> {
     validate_name(name)?;
     preflight_checks()?;
 
     let sandbox_dir = paths::sandbox_dir(name);
     if sandbox_dir.exists() {
-        return Err(BotError::SandboxExists(name.to_string()));
+        return Err(IsolaError::SandboxExists(name.to_string()));
     }
 
     let tarball = rootfs::ensure_rootfs_cached()?;
@@ -55,32 +55,26 @@ pub fn run_with_envs(
     eprintln!("Provisioning: {}...", environments.join(", "));
     let exit_code = crate::commands::enter::run_command(name, &script)?;
     if exit_code != 0 {
-        return Err(BotError::ProvisionFailed(exit_code));
+        return Err(IsolaError::ProvisionFailed(exit_code));
     }
 
     eprintln!("Sandbox '{}' is ready!", name);
     Ok(())
 }
 
-pub fn preflight_checks() -> Result<(), BotError> {
-    for bin in &["newuidmap", "newgidmap"] {
-        if std::process::Command::new("which")
-            .arg(bin)
-            .output()
-            .map(|o| !o.status.success())
-            .unwrap_or(true)
-        {
-            return Err(BotError::NamespaceError(format!(
-                "{bin} not found. Install with: sudo apt install uidmap"
-            )));
-        }
+pub fn preflight_checks() -> Result<(), IsolaError> {
+    if !crate::sandbox::userns::has_uidmap_tools() {
+        eprintln!(
+            "Note: newuidmap/newgidmap not found (install with: sudo apt install uidmap).\n\
+             The sandbox will use single-UID mapping (no root/user separation inside)."
+        );
     }
     Ok(())
 }
 
-pub fn validate_name(name: &str) -> Result<(), BotError> {
+pub fn validate_name(name: &str) -> Result<(), IsolaError> {
     if name.is_empty() {
-        return Err(BotError::InvalidName(
+        return Err(IsolaError::InvalidName(
             name.to_string(),
             "name cannot be empty".to_string(),
         ));
@@ -89,19 +83,19 @@ pub fn validate_name(name: &str) -> Result<(), BotError> {
         .chars()
         .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
     {
-        return Err(BotError::InvalidName(
+        return Err(IsolaError::InvalidName(
             name.to_string(),
             "name must contain only alphanumeric characters, hyphens, and underscores".to_string(),
         ));
     }
     if name.starts_with('-') || name.starts_with('.') {
-        return Err(BotError::InvalidName(
+        return Err(IsolaError::InvalidName(
             name.to_string(),
             "name must not start with - or .".to_string(),
         ));
     }
     if name == ".." || name.contains("..") {
-        return Err(BotError::InvalidName(
+        return Err(IsolaError::InvalidName(
             name.to_string(),
             "name must not contain '..'".to_string(),
         ));

@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-use crate::error::BotError;
+use crate::error::IsolaError;
 use crate::paths;
 
 #[derive(Serialize, Deserialize)]
@@ -16,16 +16,16 @@ pub struct SandboxConfig {
 }
 
 impl SandboxConfig {
-    pub fn load(name: &str) -> Result<Self, BotError> {
+    pub fn load(name: &str) -> Result<Self, IsolaError> {
         let path = paths::config_path(name);
         let data = std::fs::read_to_string(&path)?;
-        serde_json::from_str(&data).map_err(|e| BotError::ConfigError(e.to_string()))
+        serde_json::from_str(&data).map_err(|e| IsolaError::ConfigError(e.to_string()))
     }
 
-    pub fn save(&self) -> Result<(), BotError> {
+    pub fn save(&self) -> Result<(), IsolaError> {
         let path = paths::config_path(&self.name);
         let data =
-            serde_json::to_string_pretty(self).map_err(|e| BotError::ConfigError(e.to_string()))?;
+            serde_json::to_string_pretty(self).map_err(|e| IsolaError::ConfigError(e.to_string()))?;
         std::fs::write(&path, data)?;
         Ok(())
     }

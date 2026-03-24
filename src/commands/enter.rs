@@ -1,14 +1,14 @@
 use std::path::PathBuf;
 
-use crate::error::BotError;
+use crate::error::IsolaError;
 use crate::paths;
 use crate::sandbox::config::SandboxConfig;
 use crate::sandbox::namespace::{SandboxExec, enter_sandbox};
 
-pub fn run(name: &str, shell: bool, workspace: Option<PathBuf>) -> Result<i32, BotError> {
+pub fn run(name: &str, shell: bool, workspace: Option<PathBuf>) -> Result<i32, IsolaError> {
     let rootfs = paths::rootfs_dir(name);
     if !rootfs.exists() {
-        return Err(BotError::SandboxNotFound(name.to_string()));
+        return Err(IsolaError::SandboxNotFound(name.to_string()));
     }
 
     let config = SandboxConfig::load(name)?;
@@ -82,10 +82,10 @@ pub fn run(name: &str, shell: bool, workspace: Option<PathBuf>) -> Result<i32, B
 }
 
 /// Enter sandbox to run an arbitrary command as root (used by provisioning)
-pub fn run_command(name: &str, command: &str) -> Result<i32, BotError> {
+pub fn run_command(name: &str, command: &str) -> Result<i32, IsolaError> {
     let rootfs = paths::rootfs_dir(name);
     if !rootfs.exists() {
-        return Err(BotError::SandboxNotFound(name.to_string()));
+        return Err(IsolaError::SandboxNotFound(name.to_string()));
     }
 
     let env_vars = build_env_vars(false);

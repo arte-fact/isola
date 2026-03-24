@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use indicatif::{ProgressBar, ProgressStyle};
 
-use crate::error::BotError;
+use crate::error::IsolaError;
 use crate::paths;
 
 const ROOTFS_URL: &str = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-amd64.tar.gz";
@@ -276,7 +276,7 @@ echo "sandbox" | sudo -S <command>
     md
 }
 
-pub fn ensure_rootfs_cached() -> Result<PathBuf, BotError> {
+pub fn ensure_rootfs_cached() -> Result<PathBuf, IsolaError> {
     let cache = paths::cache_dir();
     let cached_path = cache.join(ROOTFS_FILENAME);
 
@@ -290,7 +290,7 @@ pub fn ensure_rootfs_cached() -> Result<PathBuf, BotError> {
 
     let response = reqwest::blocking::get(ROOTFS_URL)?;
     if !response.status().is_success() {
-        return Err(BotError::ExtractionFailed(format!(
+        return Err(IsolaError::ExtractionFailed(format!(
             "HTTP {}",
             response.status()
         )));
@@ -334,7 +334,7 @@ pub fn ensure_rootfs_cached() -> Result<PathBuf, BotError> {
 }
 
 /// Verify the rootfs tarball against Ubuntu's published SHA256SUMS.
-fn verify_rootfs_checksum(path: &Path) -> Result<(), BotError> {
+fn verify_rootfs_checksum(path: &Path) -> Result<(), IsolaError> {
     use std::io::Read;
 
     eprintln!("Verifying rootfs checksum...");
@@ -379,7 +379,7 @@ fn verify_rootfs_checksum(path: &Path) -> Result<(), BotError> {
     if actual_hash != expected_hash {
         // Remove the corrupted file so the next attempt re-downloads
         let _ = std::fs::remove_file(path);
-        return Err(BotError::ExtractionFailed(format!(
+        return Err(IsolaError::ExtractionFailed(format!(
             "SHA256 mismatch: expected {expected_hash}, got {actual_hash}"
         )));
     }
@@ -494,7 +494,7 @@ impl Sha256 {
     }
 }
 
-pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), BotError> {
+pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), IsolaError> {
     eprintln!("Extracting rootfs to {}...", target.display());
     std::fs::create_dir_all(target)?;
 
@@ -507,7 +507,7 @@ pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), BotError> {
 
     archive
         .unpack(target)
-        .map_err(|e| BotError::ExtractionFailed(e.to_string()))?;
+        .map_err(|e| IsolaError::ExtractionFailed(e.to_string()))?;
 
     eprintln!("Rootfs extracted successfully");
     Ok(())
@@ -517,7 +517,7 @@ pub fn post_setup_rootfs(
     rootfs: &Path,
     name: &str,
     environments: &[String],
-) -> Result<(), BotError> {
+) -> Result<(), IsolaError> {
     let host_resolv = std::fs::read_to_string("/etc/resolv.conf")?;
     std::fs::write(rootfs.join("etc/resolv.conf"), &host_resolv)?;
 

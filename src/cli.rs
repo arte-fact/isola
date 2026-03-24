@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
-    name = "bot",
+    name = "isola",
     about = "Persistent isolated sandboxes running Claude Code"
 )]
 pub struct Cli {

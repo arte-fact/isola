@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum BotError {
+pub enum IsolaError {
     #[error("Sandbox '{0}' already exists")]
     SandboxExists(String),
 
@@ -33,8 +33,8 @@ pub enum BotError {
     ProvisionFailed(i32),
 }
 
-impl From<nix::Error> for BotError {
+impl From<nix::Error> for IsolaError {
     fn from(e: nix::Error) -> Self {
-        BotError::MountError(e)
+        IsolaError::MountError(e)
     }
 }

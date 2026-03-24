@@ -2,7 +2,7 @@ use std::path::Path;
 
 use nix::mount::{MsFlags, mount};
 
-use crate::error::BotError;
+use crate::error::IsolaError;
 
 fn do_mount(
     label: &str,
@@ -11,9 +11,9 @@ fn do_mount(
     fstype: Option<&str>,
     flags: MsFlags,
     data: Option<&str>,
-) -> Result<(), BotError> {
+) -> Result<(), IsolaError> {
     mount(source, target, fstype, flags, data).map_err(|e| {
-        BotError::NamespaceError(format!(
+        IsolaError::NamespaceError(format!(
             "mount '{label}' on {} failed: {e}",
             target.display()
         ))
@@ -25,7 +25,7 @@ pub fn setup_mounts(
     workspace_host: Option<&Path>,
     claude_binary: Option<&Path>,
     session_credentials: Option<&Path>,
-) -> Result<(), BotError> {
+) -> Result<(), IsolaError> {
     let none: Option<&str> = None;
 
     // 1. Make all mounts slave (prevent propagation to host, allows bind mounts in user NS)
