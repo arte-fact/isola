@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(sysctl -n kernel.unprivileged_userns_clone)",
+      "Bash(ldd /home/benoit/.local/share/claude/versions/2.1.81)",
+      "Bash(dpkg -l)",
+      "Bash(rustc --version)",
+      "Bash(cargo --version)",
+      "Bash(pstree -p 1121953)",
+      "Read(//etc/**)",
+      "Bash(dpkg -l uidmap)",
+      "Bash(echo 'whoami && id && echo \"\"\"\"sandbox\"\"\"\" | sudo -S whoami 2>&1 && rustc --version && node --version')",
+      "Bash(echo \"exit: $?\")",
+      "Read(//home/benoit/.bot/sandboxes/test1/rootfs/**)",
+      "Bash(mkdir -p /tmp/testproject)",
+      "Read(//tmp/**)",
+      "Bash(/home/benoit/Workspace/bot/target/debug/bot create:*)",
+      "Bash(cargo add:*)",
+      "Bash(sudo chown:*)",
+      "Bash(sudo rm:*)"
+    ]
+  }
+}
