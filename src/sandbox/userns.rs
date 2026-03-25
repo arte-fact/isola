@@ -133,4 +133,3 @@ pub fn write_id_mappings(child_pid: i32, multi_uid: bool) -> Result<bool, IsolaE
 
     Ok(false)
 }
-

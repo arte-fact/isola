@@ -58,10 +58,7 @@ impl ProgressInner {
 
         // Draw line 2: detail (optional)
         if !state.detail_msg.is_empty() {
-            buf.push_str(&format!(
-                "    \x1b[2m└ {}\x1b[0m\x1b[K\n",
-                state.detail_msg
-            ));
+            buf.push_str(&format!("    \x1b[2m└ {}\x1b[0m\x1b[K\n", state.detail_msg));
             state.drawn_lines = 2;
         }
 
@@ -109,10 +106,7 @@ impl ProgressInner {
 
 impl CreationProgress {
     pub fn new(sandbox_name: &str) -> Self {
-        eprintln!(
-            "  {} Creating sandbox '{sandbox_name}'",
-            style("●").cyan()
-        );
+        eprintln!("  {} Creating sandbox '{sandbox_name}'", style("●").cyan());
         Self {
             inner: Arc::new(ProgressInner {
                 state: Mutex::new(ProgressState {

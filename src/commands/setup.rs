@@ -91,13 +91,28 @@ pub fn run() -> Result<(), IsolaError> {
         }
     }
 
-    // 4. Create sandbox with selected environments
-    crate::commands::create::run_with_envs(&name, Some(workspace_path), &env_ids)?;
+    // 4. Share SSH keys?
+    let host_ssh_dir = std::env::var("HOME")
+        .ok()
+        .map(|h| PathBuf::from(h).join(".ssh"))
+        .filter(|p| p.exists());
+    let share_ssh = if host_ssh_dir.is_some() {
+        Confirm::new("Share host SSH keys with the sandbox? (read-only)")
+            .with_default(true)
+            .with_help_message("Enables git push/pull over SSH inside the sandbox")
+            .prompt()
+            .map_err(|e| IsolaError::ConfigError(e.to_string()))?
+    } else {
+        false
+    };
 
-    // 5. Offer to import host Claude config (session is auto-imported by enter)
+    // 5. Create sandbox with selected environments
+    crate::commands::create::run_with_envs(&name, Some(workspace_path), &env_ids, share_ssh)?;
+
+    // 6. Offer to import host Claude config (session is auto-imported by enter)
     import_host_config(&name)?;
 
-    // 6. Enter the sandbox
+    // 7. Enter the sandbox
     eprintln!("Launching Claude Code...");
     let code = crate::commands::enter::run(&name, false, None)?;
     crate::reset_terminal();

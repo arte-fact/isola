@@ -25,6 +25,7 @@ pub fn setup_mounts(
     workspace_host: Option<&Path>,
     claude_binary: Option<&Path>,
     session_credentials: Option<&Path>,
+    ssh_dir: Option<&Path>,
 ) -> Result<(), IsolaError> {
     let none: Option<&str> = None;
 
@@ -219,6 +220,30 @@ pub fn setup_mounts(
                 none,
             )?;
         }
+    }
+
+    // 15. Bind-mount host SSH directory (read-only)
+    if let Some(ssh) = ssh_dir
+        && ssh.exists()
+    {
+        let ssh_target = rootfs.join("home/sandbox/.ssh");
+        std::fs::create_dir_all(&ssh_target)?;
+        do_mount(
+            "ssh dir",
+            Some(&ssh.to_string_lossy()),
+            &ssh_target,
+            none,
+            MsFlags::MS_BIND | MsFlags::MS_REC,
+            none,
+        )?;
+        // Remount read-only
+        let _ = mount(
+            none,
+            &ssh_target,
+            none,
+            MsFlags::MS_BIND | MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY | MsFlags::MS_REC,
+            none,
+        );
     }
 
     Ok(())

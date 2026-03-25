@@ -16,6 +16,16 @@ pub fn run(name: &str, shell: bool, workspace: Option<PathBuf>) -> Result<i32, I
 
     let claude_binary = find_claude_binary();
 
+    // Resolve host SSH directory if sharing is enabled
+    let ssh_dir = if config.share_ssh {
+        std::env::var("HOME")
+            .ok()
+            .map(|h| PathBuf::from(h).join(".ssh"))
+            .filter(|p| p.exists())
+    } else {
+        None
+    };
+
     // Bind-mount the host credentials file directly so the sandbox always
     // sees the latest tokens and logins inside the sandbox update the host.
     let host_creds = paths::host_claude_credentials();
@@ -84,6 +94,7 @@ pub fn run(name: &str, shell: bool, workspace: Option<PathBuf>) -> Result<i32, I
         workspace_host: workspace.map(|p| p.to_string_lossy().to_string()),
         claude_binary: claude_binary.map(|p| p.to_string_lossy().to_string()),
         session_credentials: Some(creds_source.to_string_lossy().to_string()),
+        ssh_dir: ssh_dir.map(|p| p.to_string_lossy().to_string()),
         run_as_uid,
         multi_uid: true,
         capture_output: false,
@@ -112,6 +123,7 @@ pub fn run_command_captured(
         workspace_host: None,
         claude_binary: None,
         session_credentials: None,
+        ssh_dir: None,
         run_as_uid: None,
         multi_uid: true,
         capture_output: true,

@@ -596,10 +596,7 @@ pub fn post_setup_rootfs(
         rootfs.join("home/sandbox/.claude/.claude.json"),
         &claude_state_json,
     )?;
-    std::fs::write(
-        rootfs.join("home/sandbox/.claude.json"),
-        &claude_state_json,
-    )?;
+    std::fs::write(rootfs.join("home/sandbox/.claude.json"), &claude_state_json)?;
 
     // Claude Code settings
     let claude_settings = serde_json::json!({

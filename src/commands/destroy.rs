@@ -34,6 +34,7 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
             workspace_host: None,
             claude_binary: None,
             session_credentials: None,
+            ssh_dir: None,
             run_as_uid: None,
             multi_uid: true,
             capture_output: false,

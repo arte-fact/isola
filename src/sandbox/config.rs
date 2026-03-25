@@ -13,6 +13,8 @@ pub struct SandboxConfig {
     pub workspace: Option<PathBuf>,
     #[serde(default)]
     pub environments: Vec<String>,
+    #[serde(default)]
+    pub share_ssh: bool,
 }
 
 impl SandboxConfig {
@@ -24,8 +26,8 @@ impl SandboxConfig {
 
     pub fn save(&self) -> Result<(), IsolaError> {
         let path = paths::config_path(&self.name);
-        let data =
-            serde_json::to_string_pretty(self).map_err(|e| IsolaError::ConfigError(e.to_string()))?;
+        let data = serde_json::to_string_pretty(self)
+            .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
         std::fs::write(&path, data)?;
         Ok(())
     }
@@ -43,12 +45,14 @@ mod tests {
             rootfs_url: "https://example.com/rootfs.tar.gz".to_string(),
             workspace: Some(std::path::PathBuf::from("/home/user/project")),
             environments: vec!["rust".to_string(), "nodejs".to_string()],
+            share_ssh: true,
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
         let deserialized: SandboxConfig = serde_json::from_str(&json).unwrap();
 
         assert_eq!(deserialized.name, config.name);
+        assert_eq!(deserialized.share_ssh, config.share_ssh);
         assert_eq!(deserialized.rootfs_url, config.rootfs_url);
         assert_eq!(deserialized.workspace, config.workspace);
         assert_eq!(deserialized.environments, config.environments);

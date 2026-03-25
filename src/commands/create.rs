@@ -13,7 +13,7 @@ pub const ALL_ENVIRONMENTS: &[&str] = &["rust", "nodejs", "python-uv", "go"];
 /// Create a sandbox with all environments (backward-compatible CLI)
 pub fn run(name: &str, workspace: Option<PathBuf>) -> Result<(), IsolaError> {
     let envs: Vec<String> = ALL_ENVIRONMENTS.iter().map(|s| s.to_string()).collect();
-    run_with_envs(name, workspace, &envs)
+    run_with_envs(name, workspace, &envs, false)
 }
 
 /// Create a sandbox with selected environments
@@ -21,6 +21,7 @@ pub fn run_with_envs(
     name: &str,
     workspace: Option<PathBuf>,
     environments: &[String],
+    share_ssh: bool,
 ) -> Result<(), IsolaError> {
     use crate::progress::{self, CreationProgress};
 
@@ -55,6 +56,7 @@ pub fn run_with_envs(
             .or_else(|| std::env::current_dir().ok())
             .map(|p| std::fs::canonicalize(&p).unwrap_or(p)),
         environments: environments.to_vec(),
+        share_ssh,
     };
     config.save()?;
 

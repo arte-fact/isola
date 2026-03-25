@@ -105,7 +105,9 @@ mod tests {
         let home = std::env::var("HOME").unwrap();
         assert_eq!(
             host_claude_credentials(),
-            PathBuf::from(home).join(".claude").join(".credentials.json")
+            PathBuf::from(home)
+                .join(".claude")
+                .join(".credentials.json")
         );
     }
 

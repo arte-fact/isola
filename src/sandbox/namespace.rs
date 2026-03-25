@@ -22,6 +22,8 @@ pub struct SandboxExec {
     pub workspace_host: Option<String>,
     pub claude_binary: Option<String>,
     pub session_credentials: Option<String>,
+    /// Host ~/.ssh directory to bind-mount read-only into the sandbox.
+    pub ssh_dir: Option<String>,
     pub run_as_uid: Option<u32>,
     pub multi_uid: bool,
     /// If true, redirect child stdout+stderr to a pipe readable by the parent.
@@ -58,6 +60,7 @@ struct ChildArgs {
     workspace_host: Option<CString>,
     claude_binary: Option<CString>,
     session_credentials: Option<CString>,
+    ssh_dir: Option<CString>,
     run_as_uid: Option<u32>,
 }
 
@@ -92,6 +95,11 @@ pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, IsolaError> {
             .session_credentials
             .as_ref()
             .map(|s| to_cstring(s, "session credentials path"))
+            .transpose()?,
+        ssh_dir: exec
+            .ssh_dir
+            .as_ref()
+            .map(|s| to_cstring(s, "ssh dir path"))
             .transpose()?,
         run_as_uid: exec.run_as_uid,
     };
@@ -197,6 +205,10 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
             .as_ref()
             .and_then(|s| s.to_str().ok())
             .map(Path::new),
+        args.ssh_dir
+            .as_ref()
+            .and_then(|s| s.to_str().ok())
+            .map(Path::new),
     )?;
 
     // pivot_root
@@ -256,10 +268,7 @@ pub fn spawn_sandbox(exec: SandboxExec) -> Result<SandboxChild, IsolaError> {
         (None, None)
     };
 
-    let output_write_raw = output_write
-        .as_ref()
-        .map(|w| w.as_raw_fd())
-        .unwrap_or(-1);
+    let output_write_raw = output_write.as_ref().map(|w| w.as_raw_fd()).unwrap_or(-1);
 
     let child_args = ChildArgs {
         sync_pipe_read: -1,
@@ -291,6 +300,11 @@ pub fn spawn_sandbox(exec: SandboxExec) -> Result<SandboxChild, IsolaError> {
             .session_credentials
             .as_ref()
             .map(|s| to_cstring(s, "session credentials path"))
+            .transpose()?,
+        ssh_dir: exec
+            .ssh_dir
+            .as_ref()
+            .map(|s| to_cstring(s, "ssh dir path"))
             .transpose()?,
         run_as_uid: exec.run_as_uid,
     };

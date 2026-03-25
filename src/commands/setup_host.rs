@@ -75,7 +75,11 @@ pub fn run() -> Result<(), IsolaError> {
 
     // Reload the profile
     let reload = std::process::Command::new("sudo")
-        .args(["apparmor_parser", "-r", &format!("{APPARMOR_PROFILE_DIR}/isola")])
+        .args([
+            "apparmor_parser",
+            "-r",
+            &format!("{APPARMOR_PROFILE_DIR}/isola"),
+        ])
         .status()
         .map_err(|e| IsolaError::ConfigError(format!("Failed to reload AppArmor profile: {e}")))?;
 

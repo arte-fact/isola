@@ -7,7 +7,11 @@ use crate::sandbox::namespace::{SandboxExec, enter_sandbox};
 
 use super::enter::build_env_vars;
 
-pub fn run(name: &str, command: Vec<String>, workspace: Option<PathBuf>) -> Result<i32, IsolaError> {
+pub fn run(
+    name: &str,
+    command: Vec<String>,
+    workspace: Option<PathBuf>,
+) -> Result<i32, IsolaError> {
     let rootfs = paths::rootfs_dir(name);
     if !rootfs.exists() {
         return Err(IsolaError::SandboxNotFound(name.to_string()));
@@ -19,6 +23,15 @@ pub fn run(name: &str, command: Vec<String>, workspace: Option<PathBuf>) -> Resu
     if command.is_empty() {
         return Err(IsolaError::ConfigError("no command specified".to_string()));
     }
+
+    let ssh_dir = if config.share_ssh {
+        std::env::var("HOME")
+            .ok()
+            .map(|h| std::path::PathBuf::from(h).join(".ssh"))
+            .filter(|p| p.exists())
+    } else {
+        None
+    };
 
     let exec_path = command[0].clone();
     let exec_args = command.clone();
@@ -32,6 +45,7 @@ pub fn run(name: &str, command: Vec<String>, workspace: Option<PathBuf>) -> Resu
         workspace_host: workspace.map(|p| p.to_string_lossy().to_string()),
         claude_binary: None,
         session_credentials: None,
+        ssh_dir: ssh_dir.map(|p| p.to_string_lossy().to_string()),
         run_as_uid: Some(1000),
         multi_uid: true,
         capture_output: false,
