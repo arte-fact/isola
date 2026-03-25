@@ -16,14 +16,31 @@ const ROOTFS_SHA256SUMS_URL: &str =
 const PROVISION_BASE: &str = r#"
 export DEBIAN_FRONTEND=noninteractive
 
-echo ">>> Installing base packages..."
-apt-get update
+echo ">>> Updating package lists..."
+apt-get update -y
+
+echo ">>> Installing essential packages..."
 apt-get install -y --no-install-recommends \
-    curl wget git ca-certificates \
+    apt-utils ca-certificates curl wget git \
     build-essential pkg-config libssl-dev \
-    sudo ncurses-base \
+    sudo
+
+echo ">>> Installing additional packages..."
+apt-get install -y --no-install-recommends \
+    ncurses-base \
+    jq tree htop tmux \
+    zip unzip tar gzip \
+    ripgrep fd-find bat \
+    less file lsof strace \
+    openssh-client gnupg \
+    net-tools dnsutils iproute2 \
+    man-db \
     || true
 dpkg --configure -a --force-overwrite 2>/dev/null || true
+
+# Create convenience symlinks for tools with non-obvious binary names
+ln -sf /usr/bin/fdfind /usr/local/bin/fd 2>/dev/null || true
+ln -sf /usr/bin/batcat /usr/local/bin/bat 2>/dev/null || true
 "#;
 
 const PROVISION_RUST: &str = r#"
@@ -250,6 +267,7 @@ echo "sandbox" | sudo -S <command>
         }
     }
 
+    md.push_str("- **CLI utilities**: git, curl, wget, jq, tree, htop, tmux, ripgrep (`rg`), fd (`fd`), bat, strace, lsof, ssh, zip/unzip\n");
     md.push_str("- **System**: use sudo to install any additional packages with apt-get\n");
 
     // Language-specific best practices

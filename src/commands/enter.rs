@@ -30,12 +30,12 @@ pub fn run(name: &str, shell: bool, workspace: Option<PathBuf>) -> Result<i32, I
     }
 
     let (exec_path, exec_args, run_as_uid, env_vars) = if shell {
-        // Shell mode: root for full admin access
+        // Shell mode: sandbox user
         (
             "/bin/bash".to_string(),
-            vec!["bash".to_string()],
-            None,
-            build_env_vars(false),
+            vec!["bash".to_string(), "-l".to_string()],
+            Some(1000u32),
+            build_env_vars(true),
         )
     } else {
         // Claude mode: sandbox user + --dangerously-skip-permissions

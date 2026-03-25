@@ -34,6 +34,20 @@ pub fn session_credentials() -> PathBuf {
     session_dir().join(".credentials.json")
 }
 
+pub fn host_claude_dir() -> PathBuf {
+    let home = std::env::var("HOME")
+        .expect("HOME environment variable not set — cannot determine config directory");
+    PathBuf::from(home).join(".claude")
+}
+
+pub fn host_claude_credentials() -> PathBuf {
+    host_claude_dir().join(".credentials.json")
+}
+
+pub fn host_claude_settings() -> PathBuf {
+    host_claude_dir().join("settings.json")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +97,24 @@ mod tests {
         assert_eq!(
             session_credentials(),
             session_dir().join(".credentials.json")
+        );
+    }
+
+    #[test]
+    fn host_claude_credentials_path() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            host_claude_credentials(),
+            PathBuf::from(home).join(".claude").join(".credentials.json")
+        );
+    }
+
+    #[test]
+    fn host_claude_settings_path() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(
+            host_claude_settings(),
+            PathBuf::from(home).join(".claude").join("settings.json")
         );
     }
 }

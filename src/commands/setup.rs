@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use inquire::{Confirm, MultiSelect, Text};
 
+use crate::paths;
+
 use crate::error::IsolaError;
 
 #[derive(Clone)]
@@ -92,8 +94,74 @@ pub fn run() -> Result<(), IsolaError> {
     // 4. Create sandbox with selected environments
     crate::commands::create::run_with_envs(&name, Some(workspace_path), &env_ids)?;
 
+    // 5. Offer to import host Claude session and config
+    import_host_session()?;
+    import_host_config(&name)?;
+
     // 6. Enter the sandbox
     eprintln!("Launching Claude Code...");
     let code = crate::commands::enter::run(&name, false, None)?;
     std::process::exit(code);
+}
+
+/// Offer to copy the host's Claude credentials into the shared isola session file.
+fn import_host_session() -> Result<(), IsolaError> {
+    let host_creds = paths::host_claude_credentials();
+    let session_creds = paths::session_credentials();
+
+    // Skip if host has no credentials
+    let host_data = match std::fs::read(&host_creds) {
+        Ok(data) if !data.is_empty() => data,
+        _ => return Ok(()),
+    };
+
+    // Skip if session file already has content (previously imported)
+    if session_creds.exists() {
+        if let Ok(existing) = std::fs::read(&session_creds) {
+            if !existing.is_empty() {
+                return Ok(());
+            }
+        }
+    }
+
+    let import = Confirm::new("Import Claude session from host? (avoids re-login)")
+        .with_default(true)
+        .prompt()
+        .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
+
+    if import {
+        std::fs::create_dir_all(paths::session_dir())?;
+        std::fs::write(&session_creds, &host_data)?;
+        eprintln!("Session imported from {}", host_creds.display());
+    }
+
+    Ok(())
+}
+
+/// Offer to copy the host's Claude settings.json into the sandbox rootfs.
+fn import_host_config(name: &str) -> Result<(), IsolaError> {
+    let host_settings = paths::host_claude_settings();
+
+    // Skip if host has no settings
+    let host_data = match std::fs::read(&host_settings) {
+        Ok(data) if !data.is_empty() => data,
+        _ => return Ok(()),
+    };
+
+    let import = Confirm::new("Import Claude config from host? (keeps your settings/MCP servers)")
+        .with_default(true)
+        .prompt()
+        .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
+
+    if import {
+        let rootfs = paths::rootfs_dir(name);
+        for target_dir in &["home/sandbox/.claude", "root/.claude"] {
+            let target = rootfs.join(target_dir).join("settings.json");
+            std::fs::create_dir_all(rootfs.join(target_dir))?;
+            std::fs::write(&target, &host_data)?;
+        }
+        eprintln!("Config imported from {}", host_settings.display());
+    }
+
+    Ok(())
 }
