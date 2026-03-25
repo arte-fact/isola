@@ -16,18 +16,47 @@ pub fn run(name: &str, shell: bool, workspace: Option<PathBuf>) -> Result<i32, I
 
     let claude_binary = find_claude_binary();
 
-    // Ensure shared session directory and credentials file exist
+    // Ensure shared session directory exists
     let session_credentials = paths::session_credentials();
     std::fs::create_dir_all(paths::session_dir())?;
+
+    // Auto-import host credentials if session file is empty or missing
+    let session_has_content = session_credentials
+        .metadata()
+        .map(|m| m.len() > 0)
+        .unwrap_or(false);
+    if !session_has_content {
+        let host_creds = paths::host_claude_credentials();
+        if let Ok(data) = std::fs::read(&host_creds) {
+            if !data.is_empty() {
+                std::fs::write(&session_credentials, &data)?;
+                eprintln!(
+                    "Imported Claude session from {}",
+                    host_creds.display()
+                );
+            }
+        }
+    }
+
+    // Create session file if it still doesn't exist (needed as bind-mount source)
     if !session_credentials.exists() {
         std::fs::File::create(&session_credentials)?;
     }
+
     // Ensure bind-mount target exists in rootfs
     let creds_target = rootfs.join("home/sandbox/.claude/.credentials.json");
     if !creds_target.exists() {
         std::fs::create_dir_all(rootfs.join("home/sandbox/.claude"))?;
         std::fs::File::create(&creds_target)?;
     }
+
+    // Only bind-mount credentials if the session file has content.
+    // An empty bind-mount would hide credentials Claude Code wrote
+    // directly into the rootfs.
+    let mount_session_credentials = session_credentials
+        .metadata()
+        .map(|m| m.len() > 0)
+        .unwrap_or(false);
 
     let (exec_path, exec_args, run_as_uid, env_vars) = if shell {
         // Shell mode: sandbox user
@@ -73,7 +102,11 @@ pub fn run(name: &str, shell: bool, workspace: Option<PathBuf>) -> Result<i32, I
         env_vars,
         workspace_host: workspace.map(|p| p.to_string_lossy().to_string()),
         claude_binary: claude_binary.map(|p| p.to_string_lossy().to_string()),
-        session_credentials: Some(session_credentials.to_string_lossy().to_string()),
+        session_credentials: if mount_session_credentials {
+            Some(session_credentials.to_string_lossy().to_string())
+        } else {
+            None
+        },
         run_as_uid,
         multi_uid: true,
     };

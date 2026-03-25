@@ -94,48 +94,13 @@ pub fn run() -> Result<(), IsolaError> {
     // 4. Create sandbox with selected environments
     crate::commands::create::run_with_envs(&name, Some(workspace_path), &env_ids)?;
 
-    // 5. Offer to import host Claude session and config
-    import_host_session()?;
+    // 5. Offer to import host Claude config (session is auto-imported by enter)
     import_host_config(&name)?;
 
     // 6. Enter the sandbox
     eprintln!("Launching Claude Code...");
     let code = crate::commands::enter::run(&name, false, None)?;
     std::process::exit(code);
-}
-
-/// Offer to copy the host's Claude credentials into the shared isola session file.
-fn import_host_session() -> Result<(), IsolaError> {
-    let host_creds = paths::host_claude_credentials();
-    let session_creds = paths::session_credentials();
-
-    // Skip if host has no credentials
-    let host_data = match std::fs::read(&host_creds) {
-        Ok(data) if !data.is_empty() => data,
-        _ => return Ok(()),
-    };
-
-    // Skip if session file already has content (previously imported)
-    if session_creds.exists() {
-        if let Ok(existing) = std::fs::read(&session_creds) {
-            if !existing.is_empty() {
-                return Ok(());
-            }
-        }
-    }
-
-    let import = Confirm::new("Import Claude session from host? (avoids re-login)")
-        .with_default(true)
-        .prompt()
-        .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
-
-    if import {
-        std::fs::create_dir_all(paths::session_dir())?;
-        std::fs::write(&session_creds, &host_data)?;
-        eprintln!("Session imported from {}", host_creds.display());
-    }
-
-    Ok(())
 }
 
 /// Offer to copy the host's Claude settings.json into the sandbox rootfs.
