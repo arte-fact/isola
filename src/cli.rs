@@ -66,6 +66,8 @@ pub enum Commands {
     },
     /// List all sandboxes
     List,
+    /// Install AppArmor profile for user namespace support (Ubuntu)
+    SetupHost,
     /// Generate shell completions
     Completions {
         /// Shell to generate completions for

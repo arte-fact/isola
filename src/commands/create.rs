@@ -69,6 +69,17 @@ pub fn preflight_checks() -> Result<(), IsolaError> {
              The sandbox will use single-UID mapping (no root/user separation inside)."
         );
     }
+
+    if crate::commands::setup_host::apparmor_userns_restricted()
+        && !crate::commands::setup_host::has_apparmor_profile()
+    {
+        return Err(IsolaError::NamespaceError(
+            "AppArmor restricts unprivileged user namespaces on this system.\n\
+             Run `isola setup-host` to install the required AppArmor profile."
+                .to_string(),
+        ));
+    }
+
     Ok(())
 }
 

@@ -19,6 +19,7 @@ Sandboxes are persistent — installed packages, config files, and everything ou
 
 ```
 cargo install --path .
+isola setup-host     # Ubuntu: install AppArmor profile for user namespace support
 ```
 
 ## Quick start
@@ -50,6 +51,7 @@ isola reprovision <name>           # Re-run provisioning scripts
 isola list                         # List all sandboxes
 isola destroy <name>               # Delete a sandbox and its rootfs
 isola completions <shell>          # Generate shell completions (bash, zsh, fish, etc.)
+isola setup-host                   # Install AppArmor profile (Ubuntu, one-time)
 ```
 
 ## Environments

@@ -47,6 +47,7 @@ fn main() {
         Some(Commands::Reprovision { name }) => commands::reprovision::run(&name),
         Some(Commands::Destroy { name }) => commands::destroy::run(&name),
         Some(Commands::List) => commands::list::run(),
+        Some(Commands::SetupHost) => commands::setup_host::run(),
         Some(Commands::Completions { shell }) => {
             clap_complete::generate(shell, &mut Cli::command(), "isola", &mut std::io::stdout());
             Ok(())

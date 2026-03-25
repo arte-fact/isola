@@ -6,4 +6,5 @@ pub mod exec;
 pub mod list;
 pub mod reprovision;
 pub mod setup;
+pub mod setup_host;
 pub mod status;
