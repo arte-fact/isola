@@ -1,25 +1,49 @@
 # isola
 
-Persistent, isolated Linux sandboxes for running [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Each sandbox is a lightweight container built with Linux user namespaces — no Docker or root privileges required.
+Persistent, isolated sandboxes for running [Claude Code](https://docs.anthropic.com/en/docs/claude-code). On Linux, each sandbox is a lightweight container built with user namespaces — no Docker or root privileges required. On macOS, sandboxes run inside lightweight [Lima](https://lima-vm.io/) VMs.
 
 ## How it works
 
+### Linux
+
 `isola` downloads an Ubuntu 24.04 base rootfs, provisions it with your chosen development tools, and enters it via `clone()` with `CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS`. Your host project directory is bind-mounted at `/workspace` inside the sandbox. Claude Code runs as a non-root `sandbox` user with `--dangerously-skip-permissions`, fully isolated from your host system.
 
-Sandboxes are persistent — installed packages, config files, and everything outside `/workspace` survive across sessions.
+### macOS
+
+`isola` creates an Ubuntu 24.04 VM using Lima (Apple's Virtualization.framework). Your host project directory is shared at `/workspace` via VirtioFS. The VM is provisioned with the same development tools and runs Claude Code inside the Linux guest.
+
+Sandboxes are persistent on both platforms — installed packages, config files, and everything outside `/workspace` survive across sessions.
 
 ## Requirements
 
+### Linux
 - Linux (x86_64)
 - `newuidmap` / `newgidmap` (optional — install with `sudo apt install uidmap` for multi-UID mapping; without it the sandbox uses a single-UID fallback)
 - Rust 2024 edition toolchain (to build)
 - Claude Code binary on `$PATH` or in `~/.local/bin/claude` (optional — falls back to a shell)
 
+### macOS
+- macOS 13+ (Ventura or later)
+- [Lima](https://lima-vm.io/) (`brew install lima`)
+- Rust 2024 edition toolchain (to build)
+- `ANTHROPIC_API_KEY` environment variable set (passed into the VM automatically)
+
 ## Installation
 
 ```
 cargo install --path .
+```
+
+### Linux post-install
+
+```
 isola setup-host     # Ubuntu: install AppArmor profile for user namespace support
+```
+
+### macOS post-install
+
+```
+brew install lima     # if not already installed
 ```
 
 ## Quick start
@@ -49,9 +73,9 @@ isola exec <name> -- <cmd...>      # Run a command inside a sandbox
 isola status <name>                # Show sandbox status
 isola reprovision <name>           # Re-run provisioning scripts
 isola list                         # List all sandboxes
-isola destroy <name>               # Delete a sandbox and its rootfs
+isola destroy <name>               # Delete a sandbox and its rootfs/VM
 isola completions <shell>          # Generate shell completions (bash, zsh, fish, etc.)
-isola setup-host                   # Install AppArmor profile (Ubuntu, one-time)
+isola setup-host                   # Install AppArmor profile (Linux/Ubuntu, one-time)
 ```
 
 ## Environments
@@ -73,20 +97,22 @@ Each selected environment also adds language-specific best practices to the sand
 
 ```
 ~/.isola/
-  cache/                         # Downloaded rootfs tarballs
+  cache/                         # Downloaded rootfs tarballs (Linux)
   sandboxes/<name>/
     config.json                  # Sandbox metadata (name, workspace, environments)
-    rootfs/                      # Ubuntu 24.04 root filesystem
+    rootfs/                      # Ubuntu 24.04 root filesystem (Linux)
+    lima.yaml                    # Lima VM configuration (macOS)
 ```
 
 Inside the sandbox:
 
-- `/workspace` — bind-mounted from your host project directory (read-write)
+- `/workspace` — mounted from your host project directory (read-write)
 - `/home/sandbox` — persistent home directory for the `sandbox` user
-- Network access is shared with the host (no network namespace)
-- PID and mount namespaces are isolated
+- Network access is shared with the host
 
 ## How sandbox isolation works
+
+### Linux
 
 `isola` uses three Linux namespaces:
 
@@ -95,6 +121,15 @@ Inside the sandbox:
 - **Mount namespace** — the sandbox has its own filesystem tree via `pivot_root`; only the workspace directory is shared
 
 No setuid binaries, no daemon, no container runtime. Just `clone()` + `pivot_root()` + `execve()`.
+
+### macOS
+
+`isola` delegates to Lima, which uses Apple's Virtualization.framework to run a lightweight Linux VM:
+
+- **VirtioFS** shares the workspace directory between host and guest
+- The VM runs Ubuntu 24.04 with the same provisioning as the Linux backend
+- Claude Code is installed inside the VM via npm
+- `ANTHROPIC_API_KEY` and other environment variables are forwarded into the VM
 
 ## License
 

@@ -39,7 +39,7 @@ const AVAILABLE_ENVIRONMENTS: &[Environment] = &[
 
 /// Interactive setup wizard
 pub fn run() -> Result<(), IsolaError> {
-    crate::commands::create::preflight_checks()?;
+    crate::backend::preflight_checks()?;
 
     let dir_name = std::env::current_dir()
         .ok()
