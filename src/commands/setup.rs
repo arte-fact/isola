@@ -100,6 +100,7 @@ pub fn run() -> Result<(), IsolaError> {
     // 6. Enter the sandbox
     eprintln!("Launching Claude Code...");
     let code = crate::commands::enter::run(&name, false, None)?;
+    crate::reset_terminal();
     std::process::exit(code);
 }
 

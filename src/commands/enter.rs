@@ -16,32 +16,21 @@ pub fn run(name: &str, shell: bool, workspace: Option<PathBuf>) -> Result<i32, I
 
     let claude_binary = find_claude_binary();
 
-    // Ensure shared session directory exists
-    let session_credentials = paths::session_credentials();
-    std::fs::create_dir_all(paths::session_dir())?;
-
-    // Auto-import host credentials if session file is empty or missing
-    let session_has_content = session_credentials
-        .metadata()
-        .map(|m| m.len() > 0)
-        .unwrap_or(false);
-    if !session_has_content {
-        let host_creds = paths::host_claude_credentials();
-        if let Ok(data) = std::fs::read(&host_creds) {
-            if !data.is_empty() {
-                std::fs::write(&session_credentials, &data)?;
-                eprintln!(
-                    "Imported Claude session from {}",
-                    host_creds.display()
-                );
-            }
+    // Bind-mount the host credentials file directly so the sandbox always
+    // sees the latest tokens and logins inside the sandbox update the host.
+    let host_creds = paths::host_claude_credentials();
+    let creds_source = if host_creds.exists() {
+        host_creds
+    } else {
+        // Fallback: use session file (e.g. if user logged in inside a sandbox
+        // but has no host credentials)
+        let session = paths::session_credentials();
+        std::fs::create_dir_all(paths::session_dir())?;
+        if !session.exists() {
+            std::fs::File::create(&session)?;
         }
-    }
-
-    // Create session file if it still doesn't exist (needed as bind-mount source)
-    if !session_credentials.exists() {
-        std::fs::File::create(&session_credentials)?;
-    }
+        session
+    };
 
     // Ensure bind-mount target exists in rootfs
     let creds_target = rootfs.join("home/sandbox/.claude/.credentials.json");
@@ -49,14 +38,6 @@ pub fn run(name: &str, shell: bool, workspace: Option<PathBuf>) -> Result<i32, I
         std::fs::create_dir_all(rootfs.join("home/sandbox/.claude"))?;
         std::fs::File::create(&creds_target)?;
     }
-
-    // Only bind-mount credentials if the session file has content.
-    // An empty bind-mount would hide credentials Claude Code wrote
-    // directly into the rootfs.
-    let mount_session_credentials = session_credentials
-        .metadata()
-        .map(|m| m.len() > 0)
-        .unwrap_or(false);
 
     let (exec_path, exec_args, run_as_uid, env_vars) = if shell {
         // Shell mode: sandbox user
@@ -102,20 +83,20 @@ pub fn run(name: &str, shell: bool, workspace: Option<PathBuf>) -> Result<i32, I
         env_vars,
         workspace_host: workspace.map(|p| p.to_string_lossy().to_string()),
         claude_binary: claude_binary.map(|p| p.to_string_lossy().to_string()),
-        session_credentials: if mount_session_credentials {
-            Some(session_credentials.to_string_lossy().to_string())
-        } else {
-            None
-        },
+        session_credentials: Some(creds_source.to_string_lossy().to_string()),
         run_as_uid,
         multi_uid: true,
+        capture_output: false,
     };
 
     enter_sandbox(exec)
 }
 
-/// Enter sandbox to run an arbitrary command as root (used by provisioning)
-pub fn run_command(name: &str, command: &str) -> Result<i32, IsolaError> {
+/// Enter sandbox to run a command with captured stdout+stderr (used by progress UI).
+pub fn run_command_captured(
+    name: &str,
+    command: &str,
+) -> Result<crate::sandbox::namespace::SandboxChild, IsolaError> {
     let rootfs = paths::rootfs_dir(name);
     if !rootfs.exists() {
         return Err(IsolaError::SandboxNotFound(name.to_string()));
@@ -133,9 +114,10 @@ pub fn run_command(name: &str, command: &str) -> Result<i32, IsolaError> {
         session_credentials: None,
         run_as_uid: None,
         multi_uid: true,
+        capture_output: true,
     };
 
-    enter_sandbox(exec)
+    crate::sandbox::namespace::spawn_sandbox(exec)
 }
 
 fn find_claude_binary() -> Option<PathBuf> {

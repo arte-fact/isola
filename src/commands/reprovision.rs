@@ -1,5 +1,6 @@
 use crate::error::IsolaError;
 use crate::paths;
+use crate::progress::{self, CreationProgress};
 use crate::sandbox::config::SandboxConfig;
 use crate::sandbox::rootfs;
 
@@ -12,15 +13,22 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
     let config = SandboxConfig::load(name)?;
     let environments = &config.environments;
 
-    rootfs::post_setup_rootfs(&rootfs_path, name, environments)?;
+    let progress = CreationProgress::new(&format!("Re-provisioning '{name}'"));
 
+    progress.start_step("Configuring rootfs...");
+    rootfs::post_setup_rootfs(&rootfs_path, name, environments)?;
+    progress.finish_step("Configured rootfs");
+
+    progress.start_provision();
     let script = rootfs::build_provision_script(environments);
-    eprintln!("Re-provisioning '{}': {}...", name, environments.join(", "));
-    let exit_code = crate::commands::enter::run_command(name, &script)?;
+    let child = crate::commands::enter::run_command_captured(name, &script)?;
+    let (exit_code, last_lines) = progress::monitor_provisioning(child, &progress, environments)?;
+
     if exit_code != 0 {
+        progress.finish_error(exit_code, &last_lines);
         return Err(IsolaError::ProvisionFailed(exit_code));
     }
 
-    eprintln!("Sandbox '{}' re-provisioned successfully!", name);
+    progress.finish_success(environments);
     Ok(())
 }

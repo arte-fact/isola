@@ -125,16 +125,30 @@ pub fn setup_mounts(
     std::os::unix::fs::symlink("/proc/self/fd/1", dev_path.join("stdout"))?;
     std::os::unix::fs::symlink("/proc/self/fd/2", dev_path.join("stderr"))?;
 
-    // 9. Mount /dev/pts (best-effort)
+    // 9. Mount /dev/pts (try gid=5 first, fallback to gid=0 for user namespaces)
     let pts_path = dev_path.join("pts");
     std::fs::create_dir_all(&pts_path)?;
-    let _ = mount(
+    let devpts_flags = MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC;
+    if mount(
         Some("devpts"),
         &pts_path,
         Some("devpts"),
-        MsFlags::MS_NOSUID | MsFlags::MS_NOEXEC,
-        Some("newinstance,ptmxmode=0666,mode=0620"),
-    );
+        devpts_flags,
+        Some("newinstance,ptmxmode=0666,mode=0620,gid=5"),
+    )
+    .is_err()
+    {
+        let _ = mount(
+            Some("devpts"),
+            &pts_path,
+            Some("devpts"),
+            devpts_flags,
+            Some("newinstance,ptmxmode=0666,mode=0620,gid=0"),
+        );
+    }
+
+    // Create /dev/ptmx symlink (needed by posix_openpt)
+    let _ = std::os::unix::fs::symlink("pts/ptmx", dev_path.join("ptmx"));
 
     // 10. Mount /dev/shm
     let shm_path = dev_path.join("shm");
@@ -190,12 +204,12 @@ pub fn setup_mounts(
         )?;
     }
 
-    // 14. Bind-mount shared Claude session credentials
-    if let Some(creds) = session_credentials
-        && creds.exists()
-    {
+    // 14. Bind-mount shared Claude session credentials.
+    // Always mount when provided (even if empty) so that new logins inside
+    // the sandbox are written to the shared session file on the host.
+    if let Some(creds) = session_credentials {
         let creds_target = rootfs.join("home/sandbox/.claude/.credentials.json");
-        if creds_target.exists() {
+        if creds.exists() && creds_target.exists() {
             do_mount(
                 "claude credentials",
                 Some(&creds.to_string_lossy()),

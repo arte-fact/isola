@@ -16,3 +16,4 @@ chrono = { version = "0.4", features = ["serde"] }
 inquire = "0.7"
 indicatif = "0.17"
 clap_complete = "4"
+console = "0.16.3"

@@ -17,7 +17,22 @@
       "Bash(/home/benoit/Workspace/bot/target/debug/bot create:*)",
       "Bash(cargo add:*)",
       "Bash(sudo chown:*)",
-      "Bash(sudo rm:*)"
+      "Bash(sudo rm:*)",
+      "Read(//home/benoit/.isola/session/**)",
+      "WebFetch(domain:github.com)",
+      "Bash(python3 -m json.tool)",
+      "Bash(python3:*)",
+      "Bash(cargo tree:*)",
+      "Bash(find ~/.cargo/registry/src -path */indicatif-0.17.*/src/multi.rs)",
+      "Bash(find ~/.cargo/registry/src -path */indicatif-0.17.*/src/lib.rs)",
+      "Bash(find ~/.cargo/registry/src -path */indicatif-0.17.*/src/style.rs)",
+      "Bash(find ~/.cargo/registry/src -path */console-0.15.*/src/lib.rs)",
+      "Bash(find ~/.cargo/registry/src -path */console-0.15.*/src/utils.rs)",
+      "Bash(find ~/.cargo/registry/src -path */indicatif-0.17.*/src/progress_bar.rs)",
+      "Bash(find ~/.cargo/registry/src -path */console-0.15.*/src/term.rs)",
+      "WebFetch(domain:www.redhat.com)",
+      "WebFetch(domain:www.tutorialworks.com)",
+      "WebFetch(domain:docs.rs)"
     ]
   }
 }

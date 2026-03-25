@@ -1,8 +1,6 @@
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use indicatif::{ProgressBar, ProgressStyle};
-
 use crate::error::IsolaError;
 use crate::paths;
 
@@ -14,7 +12,14 @@ const ROOTFS_SHA256SUMS_URL: &str =
 // --- Provisioning script fragments ---
 
 const PROVISION_BASE: &str = r#"
+set -eo pipefail
 export DEBIAN_FRONTEND=noninteractive
+
+# Fix file ownership for user namespace (files extracted as host UID appear
+# as non-root inside multi-UID namespaces, which can break dpkg/apt)
+for d in /var/lib/dpkg /var/cache/apt /var/log /etc/apt /etc/dpkg /run; do
+    [ -d "$d" ] && chown -R 0:0 "$d" 2>/dev/null || true
+done
 
 echo ">>> Updating package lists..."
 apt-get update -y
@@ -176,8 +181,17 @@ pub fn build_provision_script(environments: &[String]) -> String {
 echo ">>> Creating sandbox user..."
 groupadd -g 1000 sandbox 2>/dev/null || true
 useradd -m -u 1000 -g 1000 -s /bin/bash sandbox 2>/dev/null || true
-echo "sandbox:sandbox" | chpasswd
-echo "sandbox ALL=(ALL:ALL) ALL" > /etc/sudoers.d/sandbox
+
+# Set password (chpasswd needs PAM which may not work in user namespaces;
+# fall back to writing the shadow entry directly)
+if ! echo "sandbox:sandbox" | chpasswd 2>/dev/null; then
+    # Pre-computed SHA-512 hash for "sandbox" with salt "isola"
+    HASH='$6$isola$TE6K9kO1QWE0643fNqowg9NUHwMOHuZBO0UinG8mvQyjs.IYapfKU.jf8LMshE726lAsRVjWyyVw8X6r7rBr1.'
+    sed -i "s|^sandbox:[^:]*:|sandbox:${HASH}:|" /etc/shadow 2>/dev/null || true
+fi
+
+mkdir -p /etc/sudoers.d
+echo "sandbox ALL=(ALL:ALL) NOPASSWD:ALL" > /etc/sudoers.d/sandbox
 chmod 440 /etc/sudoers.d/sandbox
 "#,
     );
@@ -245,10 +259,9 @@ You are running inside an isolated Linux sandbox (user namespace + PID namespace
 - **Workspace**: /workspace (bind-mounted from host project directory, read-write)
 
 ## Running privileged commands
-Use sudo with the password "sandbox" for any privileged operation:
+Use sudo only for **system-level** operations (installing packages, configuring services):
 ```
-echo "sandbox" | sudo -S apt-get install -y <package>
-echo "sandbox" | sudo -S <command>
+sudo apt-get install -y <package>
 ```
 
 ## Available Tools
@@ -283,27 +296,40 @@ echo "sandbox" | sudo -S <command>
 
     md.push_str(
         r#"
+## CRITICAL: Never use sudo on /workspace files
+**DO NOT** run sudo, chown, chmod, or any root command on files inside `/workspace`.
+The workspace is bind-mounted from the host. Running commands as root changes file
+ownership to a sandbox-internal UID that the host user cannot access, breaking
+permissions on BOTH sides. If you encounter permission errors on workspace files,
+the files were likely modified by a previous root command — ask the user to fix
+ownership from the host with `chown -R $(whoami) <path>`.
+
+All build tools, compilers, and version control commands should run as the
+normal sandbox user — never with sudo.
+
 ## Important
 - Changes to `/workspace` are reflected on the host filesystem immediately.
 - Changes outside `/workspace` persist across sandbox sessions (persistent sandbox).
 - You cannot see or affect host processes. Your PID namespace is isolated.
-- You are free to run any command without restriction.
+- You are free to run any command without restriction outside `/workspace`.
 "#,
     );
 
     md
 }
 
-pub fn ensure_rootfs_cached() -> Result<PathBuf, IsolaError> {
+/// Download and cache rootfs with progress UI.
+pub fn ensure_rootfs_cached_with_progress(
+    progress: &crate::progress::CreationProgress,
+) -> Result<PathBuf, IsolaError> {
     let cache = paths::cache_dir();
     let cached_path = cache.join(ROOTFS_FILENAME);
 
     if cached_path.exists() {
-        eprintln!("Using cached rootfs: {}", cached_path.display());
+        progress.finish_step("Rootfs cached");
         return Ok(cached_path);
     }
 
-    eprintln!("Downloading Ubuntu base rootfs...");
     std::fs::create_dir_all(&cache)?;
 
     let response = reqwest::blocking::get(ROOTFS_URL)?;
@@ -315,21 +341,7 @@ pub fn ensure_rootfs_cached() -> Result<PathBuf, IsolaError> {
     }
 
     let total_size = response.content_length().unwrap_or(0);
-    let pb = if total_size > 0 {
-        let pb = ProgressBar::new(total_size);
-        pb.set_style(
-            ProgressStyle::default_bar()
-                .template("{msg} [{bar:40}] {bytes}/{total_bytes} ({eta})")
-                .expect("valid template")
-                .progress_chars("=> "),
-        );
-        pb.set_message("Downloading");
-        pb
-    } else {
-        let pb = ProgressBar::new_spinner();
-        pb.set_message("Downloading");
-        pb
-    };
+    let mut dl = progress.start_download(total_size);
 
     let mut reader = response;
     let mut file = std::fs::File::create(&cached_path)?;
@@ -342,11 +354,13 @@ pub fn ensure_rootfs_cached() -> Result<PathBuf, IsolaError> {
         }
         std::io::Write::write_all(&mut file, &buf[..n])?;
         downloaded += n as u64;
-        pb.set_position(downloaded);
+        dl.set_position(downloaded);
     }
-    pb.finish_with_message("Downloaded");
+    progress.finish_download();
 
+    progress.start_step("Verifying checksum...");
     verify_rootfs_checksum(&cached_path)?;
+    progress.finish_step("Checksum verified");
 
     Ok(cached_path)
 }
@@ -354,8 +368,6 @@ pub fn ensure_rootfs_cached() -> Result<PathBuf, IsolaError> {
 /// Verify the rootfs tarball against Ubuntu's published SHA256SUMS.
 fn verify_rootfs_checksum(path: &Path) -> Result<(), IsolaError> {
     use std::io::Read;
-
-    eprintln!("Verifying rootfs checksum...");
 
     // Fetch SHA256SUMS from Ubuntu
     let response = reqwest::blocking::get(ROOTFS_SHA256SUMS_URL);
@@ -402,7 +414,6 @@ fn verify_rootfs_checksum(path: &Path) -> Result<(), IsolaError> {
         )));
     }
 
-    eprintln!("Checksum verified OK");
     Ok(())
 }
 
@@ -513,7 +524,6 @@ impl Sha256 {
 }
 
 pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), IsolaError> {
-    eprintln!("Extracting rootfs to {}...", target.display());
     std::fs::create_dir_all(target)?;
 
     let file = std::fs::File::open(tarball)?;
@@ -527,7 +537,6 @@ pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), IsolaError> {
         .unpack(target)
         .map_err(|e| IsolaError::ExtractionFailed(e.to_string()))?;
 
-    eprintln!("Rootfs extracted successfully");
     Ok(())
 }
 
@@ -552,6 +561,13 @@ pub fn post_setup_rootfs(
         "APT::Sandbox::User \"root\";\n",
     )?;
 
+    // Configure dpkg for user namespace environment
+    std::fs::create_dir_all(rootfs.join("etc/dpkg/dpkg.cfg.d"))?;
+    std::fs::write(
+        rootfs.join("etc/dpkg/dpkg.cfg.d/01sandbox"),
+        "force-unsafe-io\n",
+    )?;
+
     for dir in &[
         "workspace",
         "root",
@@ -568,6 +584,22 @@ pub fn post_setup_rootfs(
 
     // Create empty credentials file (bind-mount target for shared session)
     std::fs::File::create(rootfs.join("home/sandbox/.claude/.credentials.json"))?;
+
+    // Claude Code requires .claude.json with hasCompletedOnboarding to recognise
+    // existing credentials; without it, it treats the session as a fresh install.
+    let claude_state = serde_json::json!({
+        "hasCompletedOnboarding": true,
+        "installMethod": "manual"
+    });
+    let claude_state_json = serde_json::to_string_pretty(&claude_state).unwrap();
+    std::fs::write(
+        rootfs.join("home/sandbox/.claude/.claude.json"),
+        &claude_state_json,
+    )?;
+    std::fs::write(
+        rootfs.join("home/sandbox/.claude.json"),
+        &claude_state_json,
+    )?;
 
     // Claude Code settings
     let claude_settings = serde_json::json!({

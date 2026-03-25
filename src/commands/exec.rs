@@ -34,6 +34,7 @@ pub fn run(name: &str, command: Vec<String>, workspace: Option<PathBuf>) -> Resu
         session_credentials: None,
         run_as_uid: Some(1000),
         multi_uid: true,
+        capture_output: false,
     };
 
     enter_sandbox(exec)

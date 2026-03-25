@@ -22,21 +22,30 @@ pub fn run_with_envs(
     workspace: Option<PathBuf>,
     environments: &[String],
 ) -> Result<(), IsolaError> {
+    use crate::progress::{self, CreationProgress};
+
+    let progress = CreationProgress::new(name);
+
     validate_name(name)?;
     preflight_checks()?;
+    progress.finish_step("Preflight checks passed");
 
     let sandbox_dir = paths::sandbox_dir(name);
     if sandbox_dir.exists() {
         return Err(IsolaError::SandboxExists(name.to_string()));
     }
 
-    let tarball = rootfs::ensure_rootfs_cached()?;
+    let tarball = rootfs::ensure_rootfs_cached_with_progress(&progress)?;
 
+    progress.start_step("Extracting rootfs...");
     let rootfs_path = paths::rootfs_dir(name);
     std::fs::create_dir_all(&rootfs_path)?;
     rootfs::extract_rootfs(&tarball, &rootfs_path)?;
+    progress.finish_step("Extracted rootfs");
 
+    progress.start_step("Configuring rootfs...");
     rootfs::post_setup_rootfs(&rootfs_path, name, environments)?;
+    progress.finish_step("Configured rootfs");
 
     let config = SandboxConfig {
         name: name.to_string(),
@@ -49,16 +58,18 @@ pub fn run_with_envs(
     };
     config.save()?;
 
-    eprintln!("Sandbox '{}' created successfully", name);
-
+    // Provision with captured output
+    progress.start_provision();
     let script = rootfs::build_provision_script(environments);
-    eprintln!("Provisioning: {}...", environments.join(", "));
-    let exit_code = crate::commands::enter::run_command(name, &script)?;
+    let child = crate::commands::enter::run_command_captured(name, &script)?;
+    let (exit_code, last_lines) = progress::monitor_provisioning(child, &progress, environments)?;
+
     if exit_code != 0 {
+        progress.finish_error(exit_code, &last_lines);
         return Err(IsolaError::ProvisionFailed(exit_code));
     }
 
-    eprintln!("Sandbox '{}' is ready!", name);
+    progress.finish_success(environments);
     Ok(())
 }
 
