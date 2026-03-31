@@ -226,13 +226,13 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
     }
 
     // Drop to non-root user if requested (only possible with multi-UID mapping)
-    if let Some(uid) = args.run_as_uid {
-        if got_multi_uid {
-            nix::unistd::setgid(nix::unistd::Gid::from_raw(uid))
-                .map_err(|e| IsolaError::NamespaceError(format!("setgid({uid}) failed: {e}")))?;
-            nix::unistd::setuid(nix::unistd::Uid::from_raw(uid))
-                .map_err(|e| IsolaError::NamespaceError(format!("setuid({uid}) failed: {e}")))?;
-        }
+    if let Some(uid) = args.run_as_uid
+        && got_multi_uid
+    {
+        nix::unistd::setgid(nix::unistd::Gid::from_raw(uid))
+            .map_err(|e| IsolaError::NamespaceError(format!("setgid({uid}) failed: {e}")))?;
+        nix::unistd::setuid(nix::unistd::Uid::from_raw(uid))
+            .map_err(|e| IsolaError::NamespaceError(format!("setuid({uid}) failed: {e}")))?;
     }
 
     // Start in /workspace if it exists

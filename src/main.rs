@@ -30,18 +30,26 @@ fn main() {
     let cli = Cli::parse();
 
     let result = match cli.command {
-        Some(Commands::Create { name, workspace }) => commands::create::run(&name, workspace),
+        Some(Commands::Create {
+            name,
+            workspace,
+            no_cache,
+        }) => commands::create::run(&name, workspace, no_cache),
         Some(Commands::Enter {
             name,
             shell,
+            claude,
             workspace,
-        }) => match commands::enter::run(&name, shell, workspace) {
-            Ok(code) => {
-                reset_terminal();
-                std::process::exit(code);
+        }) => {
+            let force_claude = if claude { Some(true) } else { None };
+            match commands::enter::run(&name, shell, force_claude, workspace) {
+                Ok(code) => {
+                    reset_terminal();
+                    std::process::exit(code);
+                }
+                Err(e) => Err(e),
             }
-            Err(e) => Err(e),
-        },
+        }
         Some(Commands::Shell { name }) => {
             let name = match name.or_else(|| commands::default::detect_sandbox().ok().flatten()) {
                 Some(n) => n,
@@ -52,7 +60,7 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            match commands::enter::run(&name, true, None) {
+            match commands::enter::run(&name, true, None, None) {
                 Ok(code) => {
                     reset_terminal();
                     std::process::exit(code);

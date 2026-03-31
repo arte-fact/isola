@@ -9,7 +9,7 @@ pub fn run() -> Result<(), IsolaError> {
     match detect_sandbox()? {
         Some(name) => {
             eprintln!("Entering sandbox '{name}'...");
-            let code = crate::commands::enter::run(&name, false, None)?;
+            let code = crate::commands::enter::run(&name, false, None, None)?;
             crate::reset_terminal();
             std::process::exit(code);
         }
@@ -38,14 +38,13 @@ fn find_sandbox_for_path(cwd: &Path) -> Result<Option<String>, IsolaError> {
             continue;
         }
         let name = entry.file_name().to_string_lossy().to_string();
-        if let Ok(config) = SandboxConfig::load(&name) {
-            if let Some(ws) = &config.workspace {
-                if cwd == ws || cwd.starts_with(ws) {
-                    let depth = ws.components().count();
-                    if best_match.as_ref().is_none_or(|(_, d)| depth > *d) {
-                        best_match = Some((config.name, depth));
-                    }
-                }
+        if let Ok(config) = SandboxConfig::load(&name)
+            && let Some(ws) = &config.workspace
+            && (cwd == ws || cwd.starts_with(ws))
+        {
+            let depth = ws.components().count();
+            if best_match.as_ref().is_none_or(|(_, d)| depth > *d) {
+                best_match = Some((config.name, depth));
             }
         }
     }

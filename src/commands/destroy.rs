@@ -30,7 +30,7 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
                     -exec rm -rf {} + 2>/dev/null; true"
                     .to_string(),
             ],
-            env_vars: build_env_vars(false),
+            env_vars: build_env_vars(false, false),
             workspace_host: None,
             claude_binary: None,
             session_credentials: None,

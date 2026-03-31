@@ -35,7 +35,7 @@ pub fn run(
 
     let exec_path = command[0].clone();
     let exec_args = command.clone();
-    let env_vars = build_env_vars(true);
+    let env_vars = build_env_vars(true, config.claude_integration);
 
     let exec = SandboxExec {
         rootfs: rootfs.to_string_lossy().to_string(),

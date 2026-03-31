@@ -48,6 +48,25 @@ pub fn host_claude_settings() -> PathBuf {
     host_claude_dir().join("settings.json")
 }
 
+/// Cache path for a provisioned rootfs tarball, keyed by sorted environment names,
+/// shell choice, and extras (e.g. neovim).
+pub fn provision_cache_path(environments: &[String], shell: &str, install_neovim: bool) -> PathBuf {
+    let mut parts: Vec<String> = environments.to_vec();
+    if shell != "bash" {
+        parts.push(format!("shell-{shell}"));
+    }
+    if install_neovim {
+        parts.push("neovim".to_string());
+    }
+    parts.sort();
+    let key = if parts.is_empty() {
+        "base".to_string()
+    } else {
+        parts.join("+")
+    };
+    cache_dir().join(format!("provisioned-{key}.tar.gz"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,5 +137,46 @@ mod tests {
             host_claude_settings(),
             PathBuf::from(home).join(".claude").join("settings.json")
         );
+    }
+
+    #[test]
+    fn provision_cache_path_empty_envs() {
+        let path = provision_cache_path(&[], "bash", false);
+        assert!(path.ends_with("cache/provisioned-base.tar.gz"));
+    }
+
+    #[test]
+    fn provision_cache_path_sorts_envs() {
+        let envs = vec!["rust".to_string(), "go".to_string(), "nodejs".to_string()];
+        let path = provision_cache_path(&envs, "bash", false);
+        assert!(path.ends_with("cache/provisioned-go+nodejs+rust.tar.gz"));
+    }
+
+    #[test]
+    fn provision_cache_path_same_for_different_order() {
+        let a = vec!["rust".to_string(), "nodejs".to_string()];
+        let b = vec!["nodejs".to_string(), "rust".to_string()];
+        assert_eq!(
+            provision_cache_path(&a, "bash", false),
+            provision_cache_path(&b, "bash", false)
+        );
+    }
+
+    #[test]
+    fn provision_cache_path_includes_shell() {
+        let envs = vec!["rust".to_string()];
+        let bash_path = provision_cache_path(&envs, "bash", false);
+        let fish_path = provision_cache_path(&envs, "fish", false);
+        assert_ne!(bash_path, fish_path);
+        assert!(fish_path.ends_with("cache/provisioned-rust+shell-fish.tar.gz"));
+    }
+
+    #[test]
+    fn provision_cache_path_includes_neovim() {
+        let envs = vec!["rust".to_string()];
+        let without = provision_cache_path(&envs, "bash", false);
+        let with = provision_cache_path(&envs, "bash", true);
+        assert_ne!(without, with);
+        assert!(with.ends_with("cache/provisioned-neovim+rust.tar.gz"));
     }
 }

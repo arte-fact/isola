@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "isola",
-    about = "Persistent isolated sandboxes running Claude Code"
+    about = "Persistent isolated Linux sandboxes for developers"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -21,14 +21,20 @@ pub enum Commands {
         /// Workspace directory to bind-mount into the sandbox
         #[arg(short, long)]
         workspace: Option<PathBuf>,
+        /// Skip provisioning cache (force fresh provisioning)
+        #[arg(long)]
+        no_cache: bool,
     },
-    /// Enter an existing sandbox (launches Claude Code or a shell)
+    /// Enter an existing sandbox (launches shell or Claude Code)
     Enter {
         /// Name of the sandbox to enter
         name: String,
-        /// Run a shell instead of Claude Code
+        /// Launch a shell (overrides Claude integration config)
         #[arg(long)]
         shell: bool,
+        /// Launch Claude Code (overrides config)
+        #[arg(long, conflicts_with = "shell")]
+        claude: bool,
         /// Workspace directory to bind-mount (overrides config)
         #[arg(short, long)]
         workspace: Option<PathBuf>,

@@ -23,8 +23,8 @@ pub fn run() -> Result<(), IsolaError> {
     entries.sort_by_key(|e| e.file_name());
 
     println!(
-        "{:<20} {:<24} {:<20} {:<10} {}",
-        "NAME", "CREATED", "ENVIRONMENTS", "SIZE", "WORKSPACE"
+        "{:<20} {:<24} {:<20} {:<10} WORKSPACE",
+        "NAME", "CREATED", "ENVIRONMENTS", "SIZE"
     );
     println!("{}", "-".repeat(100));
 
@@ -52,7 +52,7 @@ pub fn run() -> Result<(), IsolaError> {
                 );
             }
             Err(_) => {
-                println!("{:<20} {:<24} {:<20} {:<10} {}", name, "?", "?", size, "?");
+                println!("{:<20} {:<24} {:<20} {:<10} ?", name, "?", "?", size);
             }
         }
     }

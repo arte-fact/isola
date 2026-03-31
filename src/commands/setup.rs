@@ -2,9 +2,11 @@ use std::fmt;
 
 use std::path::PathBuf;
 
-use inquire::{Confirm, MultiSelect, Text};
+use inquire::{Confirm, MultiSelect, Select, Text};
 
 use crate::paths;
+use crate::sandbox::config::SandboxShell;
+use crate::sandbox::rootfs;
 
 use crate::error::IsolaError;
 
@@ -106,17 +108,79 @@ pub fn run() -> Result<(), IsolaError> {
         false
     };
 
-    // 5. Create sandbox with selected environments
-    crate::commands::create::run_with_envs(&name, Some(workspace_path), &env_ids, share_ssh)?;
+    // 5. Shell selection
+    let detected_shell = SandboxShell::detect_from_host();
+    let shell_options = vec!["bash", "fish", "zsh"];
+    let default_idx = shell_options
+        .iter()
+        .position(|s| *s == detected_shell.name())
+        .unwrap_or(0);
+    let shell_choice = Select::new("Shell:", shell_options)
+        .with_starting_cursor(default_idx)
+        .with_help_message(&format!(
+            "Detected: {} — will be installed and configured in the sandbox",
+            detected_shell.name()
+        ))
+        .prompt()
+        .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
+    let shell = match shell_choice {
+        "fish" => SandboxShell::Fish,
+        "zsh" => SandboxShell::Zsh,
+        _ => SandboxShell::Bash,
+    };
 
-    // 6. Offer to import host Claude config (session is auto-imported by enter)
-    import_host_config(&name)?;
+    // 6. Neovim detection
+    let host_has_neovim = rootfs::detect_neovim();
+    let install_neovim = if host_has_neovim {
+        Confirm::new("Neovim detected on host. Install in sandbox?")
+            .with_default(true)
+            .prompt()
+            .map_err(|e| IsolaError::ConfigError(e.to_string()))?
+    } else {
+        false
+    };
 
-    // 7. Enter the sandbox
-    eprintln!("Launching Claude Code...");
-    let code = crate::commands::enter::run(&name, false, None)?;
-    crate::reset_terminal();
-    std::process::exit(code);
+    // 7. Claude Code integration
+    let claude_binary_available = crate::commands::enter::find_claude_binary().is_some();
+    let claude_integration = if claude_binary_available {
+        Confirm::new("Enable Claude Code integration?")
+            .with_default(false)
+            .with_help_message("Mounts Claude binary, credentials, and settings into the sandbox")
+            .prompt()
+            .map_err(|e| IsolaError::ConfigError(e.to_string()))?
+    } else {
+        false
+    };
+
+    // 8. Create sandbox with selected options
+    crate::commands::create::run_with_envs(
+        &name,
+        Some(workspace_path),
+        &env_ids,
+        share_ssh,
+        false,
+        &shell,
+        claude_integration,
+        install_neovim,
+    )?;
+
+    // 9. Optionally import host Claude config
+    if claude_integration {
+        import_host_config(&name)?;
+    }
+
+    // 10. Enter the sandbox
+    if claude_integration {
+        eprintln!("Launching Claude Code...");
+        let code = crate::commands::enter::run(&name, false, Some(true), None)?;
+        crate::reset_terminal();
+        std::process::exit(code);
+    } else {
+        eprintln!("Launching {}...", shell.name());
+        let code = crate::commands::enter::run(&name, false, None, None)?;
+        crate::reset_terminal();
+        std::process::exit(code);
+    }
 }
 
 /// Offer to copy the host's Claude settings.json into the sandbox rootfs.

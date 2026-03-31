@@ -16,11 +16,18 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
     let progress = CreationProgress::new(&format!("Re-provisioning '{name}'"));
 
     progress.start_step("Configuring rootfs...");
-    rootfs::post_setup_rootfs(&rootfs_path, name, environments)?;
+    rootfs::post_setup_rootfs(
+        &rootfs_path,
+        name,
+        environments,
+        &config.shell,
+        config.claude_integration,
+        config.install_neovim,
+    )?;
     progress.finish_step("Configured rootfs");
 
     progress.start_provision();
-    let script = rootfs::build_provision_script(environments);
+    let script = rootfs::build_provision_script(environments, &config.shell, config.install_neovim);
     let child = crate::commands::enter::run_command_captured(name, &script)?;
     let (exit_code, last_lines) = progress::monitor_provisioning(child, &progress, environments)?;
 

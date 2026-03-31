@@ -4,24 +4,38 @@ use chrono::Utc;
 
 use crate::error::IsolaError;
 use crate::paths;
-use crate::sandbox::config::SandboxConfig;
+use crate::sandbox::config::{SandboxConfig, SandboxShell};
 use crate::sandbox::rootfs;
 
 /// All available environment IDs
 pub const ALL_ENVIRONMENTS: &[&str] = &["rust", "nodejs", "python-uv", "go"];
 
 /// Create a sandbox with all environments (backward-compatible CLI)
-pub fn run(name: &str, workspace: Option<PathBuf>) -> Result<(), IsolaError> {
+pub fn run(name: &str, workspace: Option<PathBuf>, no_cache: bool) -> Result<(), IsolaError> {
     let envs: Vec<String> = ALL_ENVIRONMENTS.iter().map(|s| s.to_string()).collect();
-    run_with_envs(name, workspace, &envs, false)
+    run_with_envs(
+        name,
+        workspace,
+        &envs,
+        false,
+        no_cache,
+        &SandboxShell::default(),
+        true,
+        false,
+    )
 }
 
 /// Create a sandbox with selected environments
+#[allow(clippy::too_many_arguments)]
 pub fn run_with_envs(
     name: &str,
     workspace: Option<PathBuf>,
     environments: &[String],
     share_ssh: bool,
+    no_cache: bool,
+    shell: &SandboxShell,
+    claude_integration: bool,
+    install_neovim: bool,
 ) -> Result<(), IsolaError> {
     use crate::progress::{self, CreationProgress};
 
@@ -36,16 +50,37 @@ pub fn run_with_envs(
         return Err(IsolaError::SandboxExists(name.to_string()));
     }
 
-    let tarball = rootfs::ensure_rootfs_cached_with_progress(&progress)?;
+    // Check for cached provisioned rootfs
+    let cached = if no_cache {
+        None
+    } else {
+        rootfs::has_cached_provision(environments, shell.name(), install_neovim)
+    };
 
-    progress.start_step("Extracting rootfs...");
     let rootfs_path = paths::rootfs_dir(name);
     std::fs::create_dir_all(&rootfs_path)?;
-    rootfs::extract_rootfs(&tarball, &rootfs_path)?;
-    progress.finish_step("Extracted rootfs");
 
+    if let Some(ref cache_path) = cached {
+        progress.start_step("Extracting cached rootfs...");
+        rootfs::extract_rootfs(cache_path, &rootfs_path)?;
+        progress.finish_step("Extracted cached rootfs");
+    } else {
+        let tarball = rootfs::ensure_rootfs_cached_with_progress(&progress)?;
+        progress.start_step("Extracting rootfs...");
+        rootfs::extract_rootfs(&tarball, &rootfs_path)?;
+        progress.finish_step("Extracted rootfs");
+    }
+
+    // Configure rootfs (sandbox-specific: hostname, git config, shell config, etc.)
     progress.start_step("Configuring rootfs...");
-    rootfs::post_setup_rootfs(&rootfs_path, name, environments)?;
+    rootfs::post_setup_rootfs(
+        &rootfs_path,
+        name,
+        environments,
+        shell,
+        claude_integration,
+        install_neovim,
+    )?;
     progress.finish_step("Configured rootfs");
 
     let config = SandboxConfig {
@@ -57,21 +92,45 @@ pub fn run_with_envs(
             .map(|p| std::fs::canonicalize(&p).unwrap_or(p)),
         environments: environments.to_vec(),
         share_ssh,
+        shell: shell.clone(),
+        claude_integration,
+        install_neovim,
     };
     config.save()?;
 
-    // Provision with captured output
-    progress.start_provision();
-    let script = rootfs::build_provision_script(environments);
-    let child = crate::commands::enter::run_command_captured(name, &script)?;
-    let (exit_code, last_lines) = progress::monitor_provisioning(child, &progress, environments)?;
+    if cached.is_some() {
+        // Cached path: just fix ownership after extraction
+        progress.start_step("Fixing ownership...");
+        let script = rootfs::build_fixup_script();
+        let exit_code = crate::commands::enter::run_command(name, &script)?;
+        if exit_code != 0 {
+            return Err(IsolaError::ProvisionFailed(exit_code));
+        }
+        progress.finish_step("Ownership fixed");
+        progress.finish_cached(environments);
+    } else {
+        // Full provisioning
+        progress.start_provision();
+        let script = rootfs::build_provision_script(environments, shell, install_neovim);
+        let child = crate::commands::enter::run_command_captured(name, &script)?;
+        let (exit_code, last_lines) =
+            progress::monitor_provisioning(child, &progress, environments)?;
 
-    if exit_code != 0 {
-        progress.finish_error(exit_code, &last_lines);
-        return Err(IsolaError::ProvisionFailed(exit_code));
+        if exit_code != 0 {
+            progress.finish_error(exit_code, &last_lines);
+            return Err(IsolaError::ProvisionFailed(exit_code));
+        }
+
+        // Cache the provisioned rootfs for future sandboxes
+        progress.start_step("Caching provisioned rootfs...");
+        match rootfs::cache_provisioned_rootfs(name, environments, shell.name(), install_neovim) {
+            Ok(()) => progress.finish_step("Cached provisioned rootfs"),
+            Err(e) => progress.finish_step(&format!("Cache skipped: {e}")),
+        }
+
+        progress.finish_success(environments);
     }
 
-    progress.finish_success(environments);
     Ok(())
 }
 

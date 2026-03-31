@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::IsolaError;
 use crate::paths;
+use crate::sandbox::config::SandboxShell;
 
 const ROOTFS_URL: &str = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-amd64.tar.gz";
 const ROOTFS_FILENAME: &str = "ubuntu-base-24.04.4-base-amd64.tar.gz";
@@ -73,6 +74,24 @@ echo ">>> Installing Go..."
 GO_VERSION=$(curl -sL "https://go.dev/dl/?mode=json" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['version'])" 2>/dev/null || echo "go1.23.6")
 curl -sL "https://go.dev/dl/${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xzf -
 echo 'export PATH="/usr/local/go/bin:$PATH"' >> /etc/profile.d/go.sh
+"#;
+
+const PROVISION_FISH: &str = r#"
+echo ">>> Installing fish shell..."
+apt-get install -y --no-install-recommends fish || true
+dpkg --configure -a --force-overwrite 2>/dev/null || true
+"#;
+
+const PROVISION_ZSH: &str = r#"
+echo ">>> Installing zsh..."
+apt-get install -y --no-install-recommends zsh || true
+dpkg --configure -a --force-overwrite 2>/dev/null || true
+"#;
+
+const PROVISION_NEOVIM: &str = r#"
+echo ">>> Installing neovim..."
+apt-get install -y --no-install-recommends neovim || true
+dpkg --configure -a --force-overwrite 2>/dev/null || true
 "#;
 
 // --- CLAUDE.md language-specific fragments ---
@@ -157,12 +176,28 @@ fn build_host_gitconfig() -> Option<String> {
 }
 
 /// Build a provisioning script from selected environments
-pub fn build_provision_script(environments: &[String]) -> String {
+pub fn build_provision_script(
+    environments: &[String],
+    shell: &SandboxShell,
+    install_neovim: bool,
+) -> String {
     let mut script = String::from("#!/bin/bash\n");
     script.push_str("export PATH=\"/root/.cargo/bin:/root/.local/bin:/usr/local/go/bin:$PATH\"\n");
 
     // Base packages (always)
     script.push_str(PROVISION_BASE);
+
+    // Shell (if not bash)
+    match shell {
+        SandboxShell::Fish => script.push_str(PROVISION_FISH),
+        SandboxShell::Zsh => script.push_str(PROVISION_ZSH),
+        SandboxShell::Bash => {}
+    }
+
+    // Neovim
+    if install_neovim {
+        script.push_str(PROVISION_NEOVIM);
+    }
 
     // Selected environments
     for env in environments {
@@ -176,11 +211,15 @@ pub fn build_provision_script(environments: &[String]) -> String {
     }
 
     // Create sandbox user (always)
-    script.push_str(
+    script.push_str(&format!(
         r#"
 echo ">>> Creating sandbox user..."
 groupadd -g 1000 sandbox 2>/dev/null || true
-useradd -m -u 1000 -g 1000 -s /bin/bash sandbox 2>/dev/null || true
+useradd -m -u 1000 -g 1000 -s {} sandbox 2>/dev/null || true"#,
+        shell.bin_path()
+    ));
+    script.push_str(
+        r#"
 
 # Set password (chpasswd needs PAM which may not work in user namespaces;
 # fall back to writing the shadow entry directly)
@@ -475,6 +514,7 @@ impl Sha256 {
 
         let [mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut h] = self.state;
 
+        #[allow(clippy::needless_range_loop)]
         for i in 0..64 {
             let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
             let ch = (e & f) ^ ((!e) & g);
@@ -540,10 +580,36 @@ pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), IsolaError> {
     Ok(())
 }
 
+pub fn detect_neovim() -> bool {
+    std::process::Command::new("which")
+        .arg("nvim")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), IsolaError> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            std::fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
+}
+
 pub fn post_setup_rootfs(
     rootfs: &Path,
     name: &str,
     environments: &[String],
+    shell: &SandboxShell,
+    claude_integration: bool,
+    install_neovim: bool,
 ) -> Result<(), IsolaError> {
     let host_resolv = std::fs::read_to_string("/etc/resolv.conf")?;
     std::fs::write(rootfs.join("etc/resolv.conf"), &host_resolv)?;
@@ -571,8 +637,6 @@ pub fn post_setup_rootfs(
     for dir in &[
         "workspace",
         "root",
-        "root/.claude",
-        "home/sandbox/.claude",
         "dev",
         "proc",
         "sys",
@@ -582,52 +646,92 @@ pub fn post_setup_rootfs(
         std::fs::create_dir_all(rootfs.join(dir))?;
     }
 
-    // Create empty credentials file (bind-mount target for shared session)
-    std::fs::File::create(rootfs.join("home/sandbox/.claude/.credentials.json"))?;
+    // Claude Code integration (opt-in)
+    if claude_integration {
+        std::fs::create_dir_all(rootfs.join("root/.claude"))?;
+        std::fs::create_dir_all(rootfs.join("home/sandbox/.claude"))?;
 
-    // Claude Code requires .claude.json with hasCompletedOnboarding to recognise
-    // existing credentials; without it, it treats the session as a fresh install.
-    let claude_state = serde_json::json!({
-        "hasCompletedOnboarding": true,
-        "installMethod": "manual"
-    });
-    let claude_state_json = serde_json::to_string_pretty(&claude_state).unwrap();
-    std::fs::write(
-        rootfs.join("home/sandbox/.claude/.claude.json"),
-        &claude_state_json,
-    )?;
-    std::fs::write(rootfs.join("home/sandbox/.claude.json"), &claude_state_json)?;
+        // Create empty credentials file (bind-mount target for shared session)
+        std::fs::File::create(rootfs.join("home/sandbox/.claude/.credentials.json"))?;
 
-    // Claude Code settings
-    let claude_settings = serde_json::json!({
-        "permissions": {
-            "defaultMode": "bypassPermissions",
-            "allow": [
-                "Bash",
-                "Read",
-                "Edit",
-                "Write",
-                "Glob",
-                "Grep",
-                "WebFetch",
-                "WebSearch",
-                "Agent",
-                "NotebookEdit"
-            ],
-            "deny": []
+        // Claude Code requires .claude.json with hasCompletedOnboarding to recognise
+        // existing credentials; without it, it treats the session as a fresh install.
+        let claude_state = serde_json::json!({
+            "hasCompletedOnboarding": true,
+            "installMethod": "manual"
+        });
+        let claude_state_json = serde_json::to_string_pretty(&claude_state).unwrap();
+        std::fs::write(
+            rootfs.join("home/sandbox/.claude/.claude.json"),
+            &claude_state_json,
+        )?;
+        std::fs::write(rootfs.join("home/sandbox/.claude.json"), &claude_state_json)?;
+
+        // Claude Code settings
+        let claude_settings = serde_json::json!({
+            "permissions": {
+                "defaultMode": "bypassPermissions",
+                "allow": [
+                    "Bash",
+                    "Read",
+                    "Edit",
+                    "Write",
+                    "Glob",
+                    "Grep",
+                    "WebFetch",
+                    "WebSearch",
+                    "Agent",
+                    "NotebookEdit"
+                ],
+                "deny": []
+            }
+        });
+        let settings_json = serde_json::to_string_pretty(&claude_settings).unwrap();
+        std::fs::write(
+            rootfs.join("home/sandbox/.claude/settings.json"),
+            &settings_json,
+        )?;
+        std::fs::write(rootfs.join("root/.claude/settings.json"), &settings_json)?;
+
+        // CLAUDE.md (dynamic based on environments)
+        let claude_md = build_claude_md(environments);
+        std::fs::write(rootfs.join("home/sandbox/.claude/CLAUDE.md"), &claude_md)?;
+        std::fs::write(rootfs.join("workspace/CLAUDE.md"), &claude_md)?;
+    }
+
+    // Copy host shell configuration
+    let home = std::env::var("HOME").ok().map(PathBuf::from);
+    match shell {
+        SandboxShell::Fish => {
+            if let Some(ref h) = home {
+                let fish_dir = h.join(".config/fish");
+                if fish_dir.exists() {
+                    let target = rootfs.join("home/sandbox/.config/fish");
+                    copy_dir_recursive(&fish_dir, &target)?;
+                }
+            }
         }
-    });
-    let settings_json = serde_json::to_string_pretty(&claude_settings).unwrap();
-    std::fs::write(
-        rootfs.join("home/sandbox/.claude/settings.json"),
-        &settings_json,
-    )?;
-    std::fs::write(rootfs.join("root/.claude/settings.json"), &settings_json)?;
+        SandboxShell::Zsh => {
+            if let Some(ref h) = home {
+                for file in &[".zshrc", ".zshenv"] {
+                    let src = h.join(file);
+                    if src.exists() {
+                        std::fs::copy(&src, rootfs.join("home/sandbox").join(file))?;
+                    }
+                }
+            }
+        }
+        SandboxShell::Bash => {}
+    }
 
-    // CLAUDE.md (dynamic based on environments)
-    let claude_md = build_claude_md(environments);
-    std::fs::write(rootfs.join("home/sandbox/.claude/CLAUDE.md"), &claude_md)?;
-    std::fs::write(rootfs.join("workspace/CLAUDE.md"), &claude_md)?;
+    // Copy host neovim configuration
+    if install_neovim && let Some(ref h) = home {
+        let nvim_dir = h.join(".config/nvim");
+        if nvim_dir.exists() {
+            let target = rootfs.join("home/sandbox/.config/nvim");
+            copy_dir_recursive(&nvim_dir, &target)?;
+        }
+    }
 
     // Inherit host git identity (best-effort)
     if let Some(gitconfig) = build_host_gitconfig() {
@@ -642,13 +746,56 @@ pub fn rootfs_url() -> &'static str {
     ROOTFS_URL
 }
 
+/// Check if a cached provisioned rootfs exists for the given environments.
+pub fn has_cached_provision(
+    environments: &[String],
+    shell: &str,
+    install_neovim: bool,
+) -> Option<PathBuf> {
+    let path = paths::provision_cache_path(environments, shell, install_neovim);
+    if path.exists() { Some(path) } else { None }
+}
+
+/// Create a gzipped tarball of the provisioned rootfs for future reuse.
+pub fn cache_provisioned_rootfs(
+    name: &str,
+    environments: &[String],
+    shell: &str,
+    install_neovim: bool,
+) -> Result<(), IsolaError> {
+    let rootfs_path = paths::rootfs_dir(name);
+    let cache_path = paths::provision_cache_path(environments, shell, install_neovim);
+
+    let file = std::fs::File::create(&cache_path)?;
+    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+    let mut builder = tar::Builder::new(encoder);
+    builder.follow_symlinks(false);
+    builder
+        .append_dir_all(".", &rootfs_path)
+        .map_err(|e| IsolaError::ExtractionFailed(format!("cache tarball: {e}")))?;
+    builder
+        .into_inner()
+        .map_err(|e| IsolaError::ExtractionFailed(format!("cache finalize: {e}")))?
+        .finish()
+        .map_err(|e| IsolaError::ExtractionFailed(format!("cache compress: {e}")))?;
+
+    Ok(())
+}
+
+/// Minimal script to fix file ownership after extracting a cached provisioned rootfs.
+/// After extraction with set_preserve_ownerships(false), all files are root-owned inside
+/// the namespace. This restores sandbox user ownership on /home/sandbox/.
+pub fn build_fixup_script() -> String {
+    "#!/bin/bash\nset -e\nchown -R 1000:1000 /home/sandbox/\n".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn provision_script_base_only() {
-        let script = build_provision_script(&[]);
+        let script = build_provision_script(&[], &SandboxShell::Bash, false);
         assert!(script.contains("apt-get update"));
         assert!(script.contains("Creating sandbox user"));
         assert!(!script.contains("Installing Rust"));
@@ -658,7 +805,7 @@ mod tests {
     #[test]
     fn provision_script_includes_selected_envs() {
         let envs = vec!["rust".to_string(), "nodejs".to_string()];
-        let script = build_provision_script(&envs);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, false);
         assert!(script.contains("Installing Rust"));
         assert!(script.contains("Installing Node.js"));
         assert!(!script.contains("Installing Python"));
@@ -673,7 +820,7 @@ mod tests {
             "python-uv".to_string(),
             "go".to_string(),
         ];
-        let script = build_provision_script(&envs);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, false);
         assert!(script.contains("Installing Rust"));
         assert!(script.contains("Installing Node.js"));
         assert!(script.contains("Installing Python"));
@@ -687,7 +834,7 @@ mod tests {
     #[test]
     fn provision_script_copies_tools_for_rust() {
         let envs = vec!["rust".to_string()];
-        let script = build_provision_script(&envs);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, false);
         assert!(script.contains("/home/sandbox/.cargo/bin"));
         assert!(script.contains("cp -r /root/.cargo /home/sandbox/.cargo"));
     }
@@ -695,9 +842,28 @@ mod tests {
     #[test]
     fn provision_script_unknown_env_ignored() {
         let envs = vec!["unknown-env".to_string()];
-        let script = build_provision_script(&envs);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, false);
         assert!(script.contains("apt-get update"));
-        // Should not panic or include unknown content
+    }
+
+    #[test]
+    fn provision_script_installs_fish() {
+        let script = build_provision_script(&[], &SandboxShell::Fish, false);
+        assert!(script.contains("Installing fish shell"));
+        assert!(script.contains("/usr/bin/fish"));
+    }
+
+    #[test]
+    fn provision_script_installs_zsh() {
+        let script = build_provision_script(&[], &SandboxShell::Zsh, false);
+        assert!(script.contains("Installing zsh"));
+        assert!(script.contains("/usr/bin/zsh"));
+    }
+
+    #[test]
+    fn provision_script_installs_neovim() {
+        let script = build_provision_script(&[], &SandboxShell::Bash, true);
+        assert!(script.contains("Installing neovim"));
     }
 
     #[test]

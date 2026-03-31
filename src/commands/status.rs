@@ -43,6 +43,18 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
             .map(|p| p.exists())
             .unwrap_or(false)
     );
+    println!("Shell: {}", config.shell.name());
+    println!(
+        "Claude integration: {}",
+        if config.claude_integration {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    if config.install_neovim {
+        println!("Neovim: installed");
+    }
     println!("Rootfs: {}", if rootfs_healthy { "ok" } else { "damaged" });
     println!("Disk usage: {}", format_size(disk_usage));
     println!("Rootfs URL: {}", config.rootfs_url);

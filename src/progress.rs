@@ -188,6 +188,18 @@ impl CreationProgress {
         eprintln!("\n  {}", style("✨ Sandbox is ready!").green().bold());
     }
 
+    pub fn finish_cached(&self, environments: &[String]) {
+        self.inner.stop_tick();
+        let elapsed = self.inner.start_time.elapsed();
+        let elapsed_str = format_duration(elapsed);
+        eprintln!(
+            "  {} Restored from cache ({}) in {elapsed_str}",
+            style("✓").green(),
+            environments.join(", "),
+        );
+        eprintln!("\n  {}", style("✨ Sandbox is ready!").green().bold());
+    }
+
     pub fn finish_error(&self, exit_code: i32, last_lines: &[String]) {
         self.inner.stop_tick();
         eprintln!(
