@@ -200,6 +200,33 @@ impl CreationProgress {
         eprintln!("\n  {}", style("✨ Sandbox is ready!").green().bold());
     }
 
+    pub fn finish_layered(
+        &self,
+        environments: &[String],
+        cached_layers: &[String],
+        built_layers: &[String],
+    ) {
+        self.inner.stop_tick();
+        let elapsed = self.inner.start_time.elapsed();
+        let elapsed_str = format_duration(elapsed);
+        if built_layers.is_empty() {
+            eprintln!(
+                "  {} Assembled from cached layers ({}) in {elapsed_str}",
+                style("✓").green(),
+                environments.join(", "),
+            );
+        } else {
+            eprintln!(
+                "  {} Ready ({}) in {elapsed_str} — cached: [{}], built: [{}]",
+                style("✓").green(),
+                environments.join(", "),
+                cached_layers.join(", "),
+                built_layers.join(", "),
+            );
+        }
+        eprintln!("\n  {}", style("✨ Sandbox is ready!").green().bold());
+    }
+
     pub fn finish_error(&self, exit_code: i32, last_lines: &[String]) {
         self.inner.stop_tick();
         eprintln!(
@@ -308,7 +335,11 @@ fn truncate_to_width(line: &str, indent: usize) -> String {
     let width = console::Term::stderr().size().1.max(40) as usize;
     let available = width.saturating_sub(indent);
     if line.len() > available {
-        format!("{}…", &line[..available.saturating_sub(1)])
+        let mut end = available.saturating_sub(1);
+        while end > 0 && !line.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &line[..end])
     } else {
         line.to_string()
     }
