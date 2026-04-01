@@ -1,0 +1,9 @@
+name: neovim
+description: "Neovim editor"
+version: "1.0.0"
+provision:
+  script: install.sh
+  verify: "nvim --version"
+paths:
+  bin: []
+  copy: []

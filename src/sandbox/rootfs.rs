@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use crate::error::IsolaError;
 use crate::paths;
+use crate::plugin::PluginRegistry;
 use crate::sandbox::config::SandboxShell;
 
 const ROOTFS_URL: &str = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-amd64.tar.gz";
@@ -49,33 +50,6 @@ ln -sf /usr/bin/fdfind /usr/local/bin/fd 2>/dev/null || true
 ln -sf /usr/bin/batcat /usr/local/bin/bat 2>/dev/null || true
 "#;
 
-const PROVISION_RUST: &str = r#"
-echo ">>> Installing Rust..."
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-. /root/.cargo/env
-"#;
-
-const PROVISION_NODEJS: &str = r#"
-echo ">>> Installing Node.js..."
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-apt-get install -y nodejs || true
-dpkg --configure -a --force-overwrite 2>/dev/null || true
-"#;
-
-const PROVISION_PYTHON_UV: &str = r#"
-echo ">>> Installing Python + uv..."
-apt-get install -y python3 python3-venv || true
-dpkg --configure -a --force-overwrite 2>/dev/null || true
-curl -LsSf https://astral.sh/uv/install.sh | sh
-"#;
-
-const PROVISION_GO: &str = r#"
-echo ">>> Installing Go..."
-GO_VERSION=$(curl -sL "https://go.dev/dl/?mode=json" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['version'])" 2>/dev/null || echo "go1.23.6")
-curl -sL "https://go.dev/dl/${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xzf -
-echo 'export PATH="/usr/local/go/bin:$PATH"' >> /etc/profile.d/go.sh
-"#;
-
 const PROVISION_FISH: &str = r#"
 echo ">>> Installing fish shell..."
 apt-get install -y --no-install-recommends fish || true
@@ -85,12 +59,6 @@ dpkg --configure -a --force-overwrite 2>/dev/null || true
 const PROVISION_ZSH: &str = r#"
 echo ">>> Installing zsh..."
 apt-get install -y --no-install-recommends zsh || true
-dpkg --configure -a --force-overwrite 2>/dev/null || true
-"#;
-
-const PROVISION_NEOVIM: &str = r#"
-echo ">>> Installing neovim..."
-apt-get install -y --no-install-recommends neovim || true
 dpkg --configure -a --force-overwrite 2>/dev/null || true
 "#;
 
@@ -124,11 +92,11 @@ fn build_host_gitconfig() -> Option<String> {
     Some(cfg)
 }
 
-/// Build a provisioning script from selected environments
+/// Build a provisioning script from selected environments using the plugin registry.
 pub fn build_provision_script(
     environments: &[String],
     shell: &SandboxShell,
-    install_neovim: bool,
+    registry: &PluginRegistry,
 ) -> String {
     let mut script = String::from("#!/bin/bash\n");
     script.push_str("export PATH=\"/root/.cargo/bin:/root/.local/bin:/usr/local/go/bin:$PATH\"\n");
@@ -143,19 +111,13 @@ pub fn build_provision_script(
         SandboxShell::Bash => {}
     }
 
-    // Neovim
-    if install_neovim {
-        script.push_str(PROVISION_NEOVIM);
-    }
-
-    // Selected environments
+    // Selected environments (from plugins)
     for env in environments {
-        match env.as_str() {
-            "rust" => script.push_str(PROVISION_RUST),
-            "nodejs" => script.push_str(PROVISION_NODEJS),
-            "python-uv" => script.push_str(PROVISION_PYTHON_UV),
-            "go" => script.push_str(PROVISION_GO),
-            other => eprintln!("warning: unknown environment '{}', skipping", other),
+        if let Some(plugin) = registry.get(env) {
+            script.push('\n');
+            script.push_str(&plugin.install_script);
+        } else {
+            eprintln!("warning: unknown environment '{env}', skipping");
         }
     }
 
@@ -184,20 +146,20 @@ chmod 440 /etc/sudoers.d/sandbox
 "#,
     );
 
-    // Copy tools to sandbox user (conditional)
+    // Copy tools to sandbox user (from plugin paths.copy)
     let mut path_parts = Vec::new();
-
-    if environments.iter().any(|e| e == "rust") {
-        script.push_str("cp -r /root/.cargo /home/sandbox/.cargo 2>/dev/null || true\n");
-        script.push_str("cp -r /root/.rustup /home/sandbox/.rustup 2>/dev/null || true\n");
-        path_parts.push("/home/sandbox/.cargo/bin");
-    }
-    if environments.iter().any(|e| e == "python-uv") {
-        script.push_str("cp -r /root/.local /home/sandbox/.local 2>/dev/null || true\n");
-        path_parts.push("/home/sandbox/.local/bin");
-    }
-    if environments.iter().any(|e| e == "go") {
-        path_parts.push("/usr/local/go/bin");
+    for env in environments {
+        if let Some(plugin) = registry.get(env) {
+            for cp in &plugin.manifest.paths.copy {
+                script.push_str(&format!(
+                    "cp -r {} {} 2>/dev/null || true\n",
+                    cp.from, cp.to
+                ));
+            }
+            for bin in &plugin.manifest.paths.bin {
+                path_parts.push(bin.as_str());
+            }
+        }
     }
 
     script.push_str("chown -R 1000:1000 /home/sandbox/\n");
@@ -210,22 +172,34 @@ chmod 440 /etc/sudoers.d/sandbox
     );
     script.push_str(&path_line);
 
-    // Same for root
-    script.push_str("echo 'export PATH=\"/root/.cargo/bin:/root/.local/bin:/usr/local/go/bin:$PATH\"' >> /root/.bashrc\n");
+    // Root PATH (collect all root-side bin paths from plugins)
+    let mut root_path_parts: Vec<String> = Vec::new();
+    for env in environments {
+        if let Some(plugin) = registry.get(env) {
+            for bin in &plugin.manifest.paths.bin {
+                if let Some(rest) = bin.strip_prefix("/home/sandbox/") {
+                    root_path_parts.push(format!("/root/{rest}"));
+                } else {
+                    root_path_parts.push(bin.clone());
+                }
+            }
+        }
+    }
+    root_path_parts.push("$PATH".to_string());
+    script.push_str(&format!(
+        "echo 'export PATH=\"{}\"' >> /root/.bashrc\n",
+        root_path_parts.join(":")
+    ));
 
     // Verify
     script.push_str("\necho \">>> Verifying...\"\n");
-    if environments.iter().any(|e| e == "rust") {
-        script.push_str("rustc --version && cargo --version\n");
-    }
-    if environments.iter().any(|e| e == "nodejs") {
-        script.push_str("node --version && npm --version\n");
-    }
-    if environments.iter().any(|e| e == "python-uv") {
-        script.push_str("python3 --version\n/root/.local/bin/uv --version\n");
-    }
-    if environments.iter().any(|e| e == "go") {
-        script.push_str("/usr/local/go/bin/go version\n");
+    for env in environments {
+        if let Some(plugin) = registry.get(env)
+            && let Some(verify) = &plugin.manifest.provision.verify
+        {
+            script.push_str(verify);
+            script.push('\n');
+        }
     }
     script.push_str("id sandbox\n");
     script.push_str("echo \"=== Provisioning complete ===\"\n");
@@ -491,7 +465,8 @@ pub fn post_setup_rootfs(
     rootfs: &Path,
     name: &str,
     shell: &SandboxShell,
-    install_neovim: bool,
+    environments: &[String],
+    registry: &PluginRegistry,
 ) -> Result<(), IsolaError> {
     let host_resolv = std::fs::read_to_string("/etc/resolv.conf")?;
     std::fs::write(rootfs.join("etc/resolv.conf"), &host_resolv)?;
@@ -554,11 +529,35 @@ pub fn post_setup_rootfs(
     }
 
     // Copy host neovim configuration
-    if install_neovim && let Some(ref h) = home {
+    if environments.iter().any(|e| e == "neovim")
+        && let Some(ref h) = home
+    {
         let nvim_dir = h.join(".config/nvim");
         if nvim_dir.exists() {
             let target = rootfs.join("home/sandbox/.config/nvim");
             copy_dir_recursive(&nvim_dir, &target)?;
+        }
+    }
+
+    // Copy host files specified by plugins (host_copy)
+    if let Some(ref h) = home {
+        for env in environments {
+            if let Some(plugin) = registry.get(env) {
+                for entry in &plugin.manifest.paths.host_copy {
+                    let src = h.join(&entry.from);
+                    let dst = rootfs.join("home/sandbox").join(&entry.to);
+                    if src.exists() {
+                        if src.is_dir() {
+                            copy_dir_recursive(&src, &dst)?;
+                        } else {
+                            if let Some(parent) = dst.parent() {
+                                std::fs::create_dir_all(parent)?;
+                            }
+                            std::fs::copy(&src, &dst)?;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -576,12 +575,8 @@ pub fn rootfs_url() -> &'static str {
 }
 
 /// Check if a cached provisioned rootfs exists for the given environments.
-pub fn has_cached_provision(
-    environments: &[String],
-    shell: &str,
-    install_neovim: bool,
-) -> Option<PathBuf> {
-    let path = paths::provision_cache_path(environments, shell, install_neovim);
+pub fn has_cached_provision(environments: &[String], shell: &str) -> Option<PathBuf> {
+    let path = paths::provision_cache_path(environments, shell);
     if path.exists() { Some(path) } else { None }
 }
 
@@ -590,10 +585,9 @@ pub fn cache_provisioned_rootfs(
     name: &str,
     environments: &[String],
     shell: &str,
-    install_neovim: bool,
 ) -> Result<(), IsolaError> {
     let rootfs_path = paths::rootfs_dir(name);
-    let cache_path = paths::provision_cache_path(environments, shell, install_neovim);
+    let cache_path = paths::provision_cache_path(environments, shell);
 
     let file = std::fs::File::create(&cache_path)?;
     let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
@@ -685,47 +679,26 @@ chmod 440 /etc/sudoers.d/sandbox
     script
 }
 
-/// Build a provisioning script for a single environment layer.
+/// Build a provisioning script for a single environment layer using its plugin.
 /// The script uses a marker file to capture only the files changed by this layer.
-pub fn build_env_layer_script(env_name: &str) -> Option<String> {
-    let provision_fragment = match env_name {
-        "rust" => PROVISION_RUST,
-        "nodejs" => PROVISION_NODEJS,
-        "python-uv" => PROVISION_PYTHON_UV,
-        "go" => PROVISION_GO,
-        _ => return None,
-    };
+pub fn build_env_layer_script(env_name: &str, registry: &PluginRegistry) -> Option<String> {
+    let plugin = registry.get(env_name)?;
 
     let mut script = String::from(LAYER_CAPTURE_HEADER);
-    script.push_str(provision_fragment);
+    script.push_str(&plugin.install_script);
 
-    // Copy tools to sandbox user (env-specific)
-    match env_name {
-        "rust" => {
-            script.push_str("cp -r /root/.cargo /home/sandbox/.cargo 2>/dev/null || true\n");
-            script.push_str("cp -r /root/.rustup /home/sandbox/.rustup 2>/dev/null || true\n");
-            script.push_str("chown -R 1000:1000 /home/sandbox/.cargo /home/sandbox/.rustup 2>/dev/null || true\n");
-        }
-        "python-uv" => {
-            script.push_str("cp -r /root/.local /home/sandbox/.local 2>/dev/null || true\n");
-            script.push_str("chown -R 1000:1000 /home/sandbox/.local 2>/dev/null || true\n");
-        }
-        _ => {}
+    // Copy tools to sandbox user (from plugin paths.copy)
+    for cp in &plugin.manifest.paths.copy {
+        script.push_str(&format!(
+            "cp -r {} {} 2>/dev/null || true\n",
+            cp.from, cp.to
+        ));
+        script.push_str(&format!(
+            "chown -R 1000:1000 {} 2>/dev/null || true\n",
+            cp.to
+        ));
     }
 
-    script.push_str(LAYER_CAPTURE_FOOTER);
-    Some(script)
-}
-
-/// Build a provisioning script for the neovim extra layer.
-pub fn build_extra_layer_script(extra_name: &str) -> Option<String> {
-    let provision_fragment = match extra_name {
-        "neovim" => PROVISION_NEOVIM,
-        _ => return None,
-    };
-
-    let mut script = String::from(LAYER_CAPTURE_HEADER);
-    script.push_str(provision_fragment);
     script.push_str(LAYER_CAPTURE_FOOTER);
     Some(script)
 }
@@ -745,11 +718,14 @@ impl LayerCacheStatus {
 }
 
 /// Compute the script text used for a layer's version hash.
-fn layer_script_text(layer_name: &str, shell: &SandboxShell) -> Option<String> {
+fn layer_script_text(
+    layer_name: &str,
+    shell: &SandboxShell,
+    registry: &PluginRegistry,
+) -> Option<String> {
     match layer_name {
         "base" => Some(build_base_layer_script(shell)),
-        "extra-neovim" => build_extra_layer_script("neovim"),
-        env_name => build_env_layer_script(env_name),
+        env_name => build_env_layer_script(env_name, registry),
     }
 }
 
@@ -757,22 +733,19 @@ fn layer_script_text(layer_name: &str, shell: &SandboxShell) -> Option<String> {
 pub fn check_layer_cache(
     environments: &[String],
     shell: &SandboxShell,
-    install_neovim: bool,
+    registry: &PluginRegistry,
 ) -> LayerCacheStatus {
     let mut cached = Vec::new();
     let mut uncached = Vec::new();
 
-    // Determine all needed layers in order: base, then envs (sorted), then extras
+    // Determine all needed layers in order: base, then envs (sorted)
     let mut layer_names = vec!["base".to_string()];
     let mut sorted_envs: Vec<String> = environments.to_vec();
     sorted_envs.sort();
     layer_names.extend(sorted_envs);
-    if install_neovim {
-        layer_names.push("extra-neovim".to_string());
-    }
 
     for name in &layer_names {
-        if let Some(script) = layer_script_text(name, shell) {
+        if let Some(script) = layer_script_text(name, shell, registry) {
             let hash = layer_version_hash(&script);
             let path = paths::layer_cache_path(name, &hash, shell.name());
             if path.exists() {
@@ -787,18 +760,16 @@ pub fn check_layer_cache(
 }
 
 /// Build a fixup script that sets up combined PATH for all environments and fixes ownership.
-pub fn build_layered_fixup_script(environments: &[String]) -> String {
+pub fn build_layered_fixup_script(environments: &[String], registry: &PluginRegistry) -> String {
     let mut script = String::from("#!/bin/bash\nset -e\n");
 
-    let mut path_parts = Vec::new();
-    if environments.iter().any(|e| e == "rust") {
-        path_parts.push("/home/sandbox/.cargo/bin");
-    }
-    if environments.iter().any(|e| e == "python-uv") {
-        path_parts.push("/home/sandbox/.local/bin");
-    }
-    if environments.iter().any(|e| e == "go") {
-        path_parts.push("/usr/local/go/bin");
+    let mut path_parts: Vec<&str> = Vec::new();
+    for env in environments {
+        if let Some(plugin) = registry.get(env) {
+            for bin in &plugin.manifest.paths.bin {
+                path_parts.push(bin);
+            }
+        }
     }
     path_parts.push("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
 
@@ -806,9 +777,27 @@ pub fn build_layered_fixup_script(environments: &[String]) -> String {
         "echo 'export PATH=\"{}\"' >> /home/sandbox/.bashrc\n",
         path_parts.join(":")
     ));
-    script.push_str(
-        "echo 'export PATH=\"/root/.cargo/bin:/root/.local/bin:/usr/local/go/bin:$PATH\"' >> /root/.bashrc\n",
-    );
+
+    // Root PATH from plugin bin paths
+    let root_bins: Vec<String> = environments
+        .iter()
+        .filter_map(|e| registry.get(e))
+        .flat_map(|p| p.manifest.paths.bin.iter())
+        .filter_map(|b| {
+            b.strip_prefix("/home/sandbox/")
+                .map(|rest| format!("/root/{rest}"))
+                .or_else(|| Some(b.clone()))
+        })
+        .collect();
+    let root_path = if root_bins.is_empty() {
+        "$PATH".to_string()
+    } else {
+        format!("{}:$PATH", root_bins.join(":"))
+    };
+    script.push_str(&format!(
+        "echo 'export PATH=\"{root_path}\"' >> /root/.bashrc\n"
+    ));
+
     script.push_str("chown -R 1000:1000 /home/sandbox/\n");
     script
 }
@@ -843,6 +832,7 @@ pub fn cache_env_layer(
     name: &str,
     layer_name: &str,
     shell: &SandboxShell,
+    registry: &PluginRegistry,
 ) -> Result<Option<PathBuf>, IsolaError> {
     let rootfs_path = paths::rootfs_dir(name);
     let layer_tar_in_rootfs = rootfs_path.join("tmp/.layer_cache.tar.gz");
@@ -851,8 +841,8 @@ pub fn cache_env_layer(
         return Ok(None);
     }
 
-    let script = layer_script_text(layer_name, shell)
-        .ok_or_else(|| IsolaError::ConfigError(format!("unknown layer: {layer_name}")))?;
+    let script = layer_script_text(layer_name, shell, registry)
+        .ok_or_else(|| IsolaError::PluginError(format!("unknown layer: {layer_name}")))?;
     let hash = layer_version_hash(&script);
     let cache_path = paths::layer_cache_path(layer_name, &hash, shell.name());
 
@@ -865,10 +855,16 @@ pub fn cache_env_layer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin::PluginRegistry;
+
+    fn registry() -> PluginRegistry {
+        PluginRegistry::load().unwrap()
+    }
 
     #[test]
     fn provision_script_base_only() {
-        let script = build_provision_script(&[], &SandboxShell::Bash, false);
+        let r = registry();
+        let script = build_provision_script(&[], &SandboxShell::Bash, &r);
         assert!(script.contains("apt-get update"));
         assert!(script.contains("Creating sandbox user"));
         assert!(!script.contains("Installing Rust"));
@@ -877,8 +873,9 @@ mod tests {
 
     #[test]
     fn provision_script_includes_selected_envs() {
+        let r = registry();
         let envs = vec!["rust".to_string(), "nodejs".to_string()];
-        let script = build_provision_script(&envs, &SandboxShell::Bash, false);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, &r);
         assert!(script.contains("Installing Rust"));
         assert!(script.contains("Installing Node.js"));
         assert!(!script.contains("Installing Python"));
@@ -887,13 +884,14 @@ mod tests {
 
     #[test]
     fn provision_script_all_envs() {
+        let r = registry();
         let envs = vec![
             "rust".to_string(),
             "nodejs".to_string(),
             "python-uv".to_string(),
             "go".to_string(),
         ];
-        let script = build_provision_script(&envs, &SandboxShell::Bash, false);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, &r);
         assert!(script.contains("Installing Rust"));
         assert!(script.contains("Installing Node.js"));
         assert!(script.contains("Installing Python"));
@@ -906,36 +904,42 @@ mod tests {
 
     #[test]
     fn provision_script_copies_tools_for_rust() {
+        let r = registry();
         let envs = vec!["rust".to_string()];
-        let script = build_provision_script(&envs, &SandboxShell::Bash, false);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, &r);
         assert!(script.contains("/home/sandbox/.cargo/bin"));
         assert!(script.contains("cp -r /root/.cargo /home/sandbox/.cargo"));
     }
 
     #[test]
     fn provision_script_unknown_env_ignored() {
+        let r = registry();
         let envs = vec!["unknown-env".to_string()];
-        let script = build_provision_script(&envs, &SandboxShell::Bash, false);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, &r);
         assert!(script.contains("apt-get update"));
     }
 
     #[test]
     fn provision_script_installs_fish() {
-        let script = build_provision_script(&[], &SandboxShell::Fish, false);
+        let r = registry();
+        let script = build_provision_script(&[], &SandboxShell::Fish, &r);
         assert!(script.contains("Installing fish shell"));
         assert!(script.contains("/usr/bin/fish"));
     }
 
     #[test]
     fn provision_script_installs_zsh() {
-        let script = build_provision_script(&[], &SandboxShell::Zsh, false);
+        let r = registry();
+        let script = build_provision_script(&[], &SandboxShell::Zsh, &r);
         assert!(script.contains("Installing zsh"));
         assert!(script.contains("/usr/bin/zsh"));
     }
 
     #[test]
     fn provision_script_installs_neovim() {
-        let script = build_provision_script(&[], &SandboxShell::Bash, true);
+        let r = registry();
+        let envs = vec!["neovim".to_string()];
+        let script = build_provision_script(&envs, &SandboxShell::Bash, &r);
         assert!(script.contains("Installing neovim"));
     }
 
@@ -977,7 +981,8 @@ mod tests {
 
     #[test]
     fn env_layer_script_rust() {
-        let script = build_env_layer_script("rust").unwrap();
+        let r = registry();
+        let script = build_env_layer_script("rust", &r).unwrap();
         assert!(script.contains("Installing Rust"));
         assert!(script.contains("cp -r /root/.cargo /home/sandbox/.cargo"));
         assert!(script.contains(".layer_marker"));
@@ -986,40 +991,39 @@ mod tests {
 
     #[test]
     fn env_layer_script_nodejs() {
-        let script = build_env_layer_script("nodejs").unwrap();
+        let r = registry();
+        let script = build_env_layer_script("nodejs", &r).unwrap();
         assert!(script.contains("Installing Node.js"));
         assert!(script.contains(".layer_marker"));
     }
 
     #[test]
     fn env_layer_script_unknown_returns_none() {
-        assert!(build_env_layer_script("unknown").is_none());
+        let r = registry();
+        assert!(build_env_layer_script("unknown", &r).is_none());
     }
 
     #[test]
-    fn extra_layer_script_neovim() {
-        let script = build_extra_layer_script("neovim").unwrap();
+    fn env_layer_script_neovim() {
+        let r = registry();
+        let script = build_env_layer_script("neovim", &r).unwrap();
         assert!(script.contains("Installing neovim"));
         assert!(script.contains(".layer_marker"));
     }
 
     #[test]
-    fn extra_layer_script_unknown_returns_none() {
-        assert!(build_extra_layer_script("unknown").is_none());
-    }
-
-    #[test]
     fn layered_fixup_script_empty_envs() {
-        let script = build_layered_fixup_script(&[]);
+        let r = registry();
+        let script = build_layered_fixup_script(&[], &r);
         assert!(script.contains("chown -R 1000:1000 /home/sandbox/"));
-        // No sandbox user PATH entries for envs
         assert!(!script.contains("/home/sandbox/.cargo/bin"));
     }
 
     #[test]
     fn layered_fixup_script_with_envs() {
+        let r = registry();
         let envs = vec!["rust".to_string(), "go".to_string()];
-        let script = build_layered_fixup_script(&envs);
+        let script = build_layered_fixup_script(&envs, &r);
         assert!(script.contains("/home/sandbox/.cargo/bin"));
         assert!(script.contains("/usr/local/go/bin"));
         assert!(!script.contains("/home/sandbox/.local/bin"));
@@ -1027,19 +1031,18 @@ mod tests {
 
     #[test]
     fn check_layer_cache_reports_all_layers() {
-        // All requested layers should appear in either cached or uncached
+        let r = registry();
         let envs = vec!["rust".to_string()];
-        let status = check_layer_cache(&envs, &SandboxShell::Bash, false);
+        let status = check_layer_cache(&envs, &SandboxShell::Bash, &r);
         let total = status.cached.len() + status.uncached.len();
-        // base + rust = 2 total
         assert_eq!(total, 2);
     }
 
     #[test]
     fn check_layer_cache_sorts_envs() {
+        let r = registry();
         let envs = vec!["nodejs".to_string(), "rust".to_string(), "go".to_string()];
-        let status = check_layer_cache(&envs, &SandboxShell::Bash, false);
-        // All layers (cached + uncached) should be base, go, nodejs, rust (sorted envs)
+        let status = check_layer_cache(&envs, &SandboxShell::Bash, &r);
         let mut all_names: Vec<String> = status
             .cached
             .iter()

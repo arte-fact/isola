@@ -31,6 +31,9 @@ pub enum IsolaError {
 
     #[error("Provisioning failed with exit code {0}")]
     ProvisionFailed(i32),
+
+    #[error("Plugin error: {0}")]
+    PluginError(String),
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 use crate::error::IsolaError;
 use crate::paths;
+use crate::plugin::PluginRegistry;
 use crate::progress::{self, CreationProgress};
 use crate::sandbox::config::SandboxConfig;
 use crate::sandbox::rootfs;
@@ -12,16 +13,16 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
 
     let config = SandboxConfig::load(name)?;
     let environments = &config.environments;
+    let registry = PluginRegistry::load()?;
 
     let progress = CreationProgress::new(&format!("Re-provisioning '{name}'"));
 
     progress.start_step("Configuring rootfs...");
-    rootfs::post_setup_rootfs(&rootfs_path, name, &config.shell, config.install_neovim)?;
+    rootfs::post_setup_rootfs(&rootfs_path, name, &config.shell, environments, &registry)?;
     progress.finish_step("Configured rootfs");
 
     // Check which layers need rebuilding
-    let layer_status =
-        rootfs::check_layer_cache(environments, &config.shell, config.install_neovim);
+    let layer_status = rootfs::check_layer_cache(environments, &config.shell, &registry);
     let mut built_layers = Vec::new();
     let mut cached_layers = Vec::new();
 
@@ -39,12 +40,9 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
     for layer_name in &layer_status.uncached {
         let script = if layer_name == "base" {
             rootfs::build_base_layer_script(&config.shell)
-        } else if let Some(extra) = layer_name.strip_prefix("extra-") {
-            rootfs::build_extra_layer_script(extra)
-                .ok_or_else(|| IsolaError::ConfigError(format!("unknown extra: {extra}")))?
         } else {
-            rootfs::build_env_layer_script(layer_name).ok_or_else(|| {
-                IsolaError::ConfigError(format!("unknown environment: {layer_name}"))
+            rootfs::build_env_layer_script(layer_name, &registry).ok_or_else(|| {
+                IsolaError::PluginError(format!("no plugin found for '{layer_name}'"))
             })?
         };
 
@@ -62,7 +60,7 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
             if let Err(e) = rootfs::cache_base_layer(name, &config.shell) {
                 eprintln!("warning: failed to cache base layer: {e}");
             }
-        } else if let Err(e) = rootfs::cache_env_layer(name, layer_name, &config.shell) {
+        } else if let Err(e) = rootfs::cache_env_layer(name, layer_name, &config.shell, &registry) {
             eprintln!("warning: failed to cache {layer_name} layer: {e}");
         }
 
@@ -71,7 +69,7 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
 
     // Fixup PATH + ownership
     progress.start_step("Fixing ownership...");
-    let fixup = rootfs::build_layered_fixup_script(environments);
+    let fixup = rootfs::build_layered_fixup_script(environments, &registry);
     let exit_code = crate::commands::enter::run_command(name, &fixup)?;
     if exit_code != 0 {
         return Err(IsolaError::ProvisionFailed(exit_code));

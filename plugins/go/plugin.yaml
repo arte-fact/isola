@@ -1,0 +1,10 @@
+name: go
+description: "Go (latest)"
+version: "1.0.0"
+provision:
+  script: install.sh
+  verify: "/usr/local/go/bin/go version"
+paths:
+  bin:
+    - /usr/local/go/bin
+  copy: []

@@ -1,49 +1,31 @@
 use std::fmt;
-
 use std::path::PathBuf;
 
 use inquire::{Confirm, MultiSelect, Select, Text};
 
+use crate::error::IsolaError;
 use crate::paths;
+use crate::plugin::PluginRegistry;
 use crate::sandbox::config::{LocalConfig, SandboxShell};
 use crate::sandbox::rootfs;
 
-use crate::error::IsolaError;
-
 #[derive(Clone)]
-pub struct Environment {
-    pub id: &'static str,
-    pub label: &'static str,
+struct PluginChoice {
+    name: String,
+    description: String,
 }
 
-impl fmt::Display for Environment {
+impl fmt::Display for PluginChoice {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.label)
+        write!(f, "{}", self.description)
     }
 }
-
-const AVAILABLE_ENVIRONMENTS: &[Environment] = &[
-    Environment {
-        id: "rust",
-        label: "Rust (rustup + cargo)",
-    },
-    Environment {
-        id: "nodejs",
-        label: "Node.js 22 LTS (node + npm)",
-    },
-    Environment {
-        id: "python-uv",
-        label: "Python 3 + uv",
-    },
-    Environment {
-        id: "go",
-        label: "Go (latest)",
-    },
-];
 
 /// Interactive setup wizard
 pub fn run() -> Result<(), IsolaError> {
     crate::commands::create::preflight_checks()?;
+
+    let registry = PluginRegistry::load()?;
 
     let dir_name = std::env::current_dir()
         .ok()
@@ -57,14 +39,23 @@ pub fn run() -> Result<(), IsolaError> {
         .prompt()
         .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
 
-    // 2. Environment selection
-    let env_options: Vec<Environment> = AVAILABLE_ENVIRONMENTS.to_vec();
+    // 2. Environment selection (from plugin registry, excluding neovim which gets its own prompt)
+    let env_options: Vec<PluginChoice> = registry
+        .available_plugins()
+        .iter()
+        .filter(|p| p.manifest.name != "neovim")
+        .map(|p| PluginChoice {
+            name: p.manifest.name.clone(),
+            description: p.manifest.description.clone(),
+        })
+        .collect();
+
     let selected = MultiSelect::new("Select environments to install:", env_options)
         .with_help_message("Space to toggle, Enter to confirm")
         .prompt()
         .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
 
-    let env_ids: Vec<String> = selected.iter().map(|e| e.id.to_string()).collect();
+    let mut env_ids: Vec<String> = selected.iter().map(|e| e.name.clone()).collect();
 
     if env_ids.is_empty() {
         eprintln!("No environments selected, installing base system only.");
@@ -129,16 +120,19 @@ pub fn run() -> Result<(), IsolaError> {
         _ => SandboxShell::Bash,
     };
 
-    // 6. Neovim detection
-    let host_has_neovim = rootfs::detect_neovim();
-    let install_neovim = if host_has_neovim {
-        Confirm::new("Neovim detected on host. Install in sandbox?")
-            .with_default(true)
-            .prompt()
-            .map_err(|e| IsolaError::ConfigError(e.to_string()))?
-    } else {
-        false
-    };
+    // 6. Neovim detection (only if the neovim plugin exists)
+    if registry.get("neovim").is_some() {
+        let host_has_neovim = rootfs::detect_neovim();
+        if host_has_neovim {
+            let install = Confirm::new("Neovim detected on host. Install in sandbox?")
+                .with_default(true)
+                .prompt()
+                .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
+            if install {
+                env_ids.push("neovim".to_string());
+            }
+        }
+    }
 
     // 7. Create sandbox with selected options
     crate::commands::create::run_with_envs(
@@ -148,7 +142,7 @@ pub fn run() -> Result<(), IsolaError> {
         share_ssh,
         false,
         &shell,
-        install_neovim,
+        &registry,
     )?;
 
     // 8. Save .isola/config.yaml for team sharing
@@ -157,7 +151,6 @@ pub fn run() -> Result<(), IsolaError> {
             environments: Some(env_ids.clone()),
             shell: Some(shell.clone()),
             share_ssh: Some(share_ssh),
-            install_neovim: Some(install_neovim),
         };
         local.save(&workspace_path)?;
         eprintln!("Saved .isola/config.yaml — commit to share sandbox config with your team.");

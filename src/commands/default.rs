@@ -2,6 +2,7 @@ use std::path::Path;
 
 use crate::error::IsolaError;
 use crate::paths;
+use crate::plugin::PluginRegistry;
 use crate::sandbox::config::{LocalConfig, SandboxConfig, SandboxShell};
 
 /// Default command: auto-detect sandbox for cwd, or launch setup wizard
@@ -75,7 +76,7 @@ fn auto_create_from_local_config(
         .clone()
         .unwrap_or_else(SandboxShell::detect_from_host);
     let share_ssh = config.share_ssh.unwrap_or(false);
-    let install_neovim = config.install_neovim.unwrap_or(false);
+    let registry = PluginRegistry::load_for_project(Some(project_dir))?;
 
     eprintln!("Found .isola/config.yaml, creating sandbox '{name}'...");
 
@@ -86,7 +87,7 @@ fn auto_create_from_local_config(
         share_ssh,
         false,
         &shell,
-        install_neovim,
+        &registry,
     )?;
 
     Ok(name)

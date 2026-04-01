@@ -1,0 +1,17 @@
+name: claude-unchained
+description: "Claude Code (--dangerously-skip-permissions)"
+version: "1.0.0"
+provision:
+  script: install.sh
+  verify: "claude --version"
+paths:
+  bin:
+    - /home/sandbox/.local/bin
+  copy:
+    - from: /root/.local/share/claude
+      to: /home/sandbox/.local/share/claude
+    - from: /root/.local/bin/claude
+      to: /home/sandbox/.local/bin/claude
+  host_copy:
+    - from: .claude
+      to: .claude

@@ -38,12 +38,9 @@ pub fn layers_cache_dir() -> PathBuf {
 /// Path for a single layer cache file.
 /// - Base layer: `layers/base-{hash}-{shell}.tar.gz`
 /// - Env layer: `layers/env-{name}-{hash}.tar.gz`
-/// - Extra layer: `layers/extra-{name}-{hash}.tar.gz`
 pub fn layer_cache_path(layer_name: &str, version_hash: &str, shell: &str) -> PathBuf {
     let filename = if layer_name == "base" {
         format!("base-{version_hash}-{shell}.tar.gz")
-    } else if let Some(extra) = layer_name.strip_prefix("extra-") {
-        format!("extra-{extra}-{version_hash}.tar.gz")
     } else {
         format!("env-{layer_name}-{version_hash}.tar.gz")
     };
@@ -51,13 +48,10 @@ pub fn layer_cache_path(layer_name: &str, version_hash: &str, shell: &str) -> Pa
 }
 
 /// Legacy: cache path for a monolithic provisioned rootfs tarball.
-pub fn provision_cache_path(environments: &[String], shell: &str, install_neovim: bool) -> PathBuf {
+pub fn provision_cache_path(environments: &[String], shell: &str) -> PathBuf {
     let mut parts: Vec<String> = environments.to_vec();
     if shell != "bash" {
         parts.push(format!("shell-{shell}"));
-    }
-    if install_neovim {
-        parts.push("neovim".to_string());
     }
     parts.sort();
     let key = if parts.is_empty() {
@@ -66,6 +60,16 @@ pub fn provision_cache_path(environments: &[String], shell: &str, install_neovim
         parts.join("+")
     };
     cache_dir().join(format!("provisioned-{key}.tar.gz"))
+}
+
+/// User-global plugins directory: `~/.isola/plugins/`
+pub fn user_plugins_dir() -> PathBuf {
+    isola_home().join("plugins")
+}
+
+/// Project-local plugins directory: `<dir>/.isola/plugins/`
+pub fn project_plugins_dir(project_dir: &Path) -> PathBuf {
+    project_dir.join(".isola").join("plugins")
 }
 
 #[cfg(test)]
@@ -125,9 +129,9 @@ mod tests {
     }
 
     #[test]
-    fn layer_cache_path_extra() {
-        let path = layer_cache_path("extra-neovim", "789abc", "bash");
-        assert!(path.ends_with("layers/extra-neovim-789abc.tar.gz"));
+    fn layer_cache_path_neovim() {
+        let path = layer_cache_path("neovim", "789abc", "bash");
+        assert!(path.ends_with("layers/env-neovim-789abc.tar.gz"));
     }
 
     #[test]
@@ -138,14 +142,14 @@ mod tests {
 
     #[test]
     fn provision_cache_path_empty_envs() {
-        let path = provision_cache_path(&[], "bash", false);
+        let path = provision_cache_path(&[], "bash");
         assert!(path.ends_with("cache/provisioned-base.tar.gz"));
     }
 
     #[test]
     fn provision_cache_path_sorts_envs() {
         let envs = vec!["rust".to_string(), "go".to_string(), "nodejs".to_string()];
-        let path = provision_cache_path(&envs, "bash", false);
+        let path = provision_cache_path(&envs, "bash");
         assert!(path.ends_with("cache/provisioned-go+nodejs+rust.tar.gz"));
     }
 
@@ -154,26 +158,28 @@ mod tests {
         let a = vec!["rust".to_string(), "nodejs".to_string()];
         let b = vec!["nodejs".to_string(), "rust".to_string()];
         assert_eq!(
-            provision_cache_path(&a, "bash", false),
-            provision_cache_path(&b, "bash", false)
+            provision_cache_path(&a, "bash"),
+            provision_cache_path(&b, "bash")
         );
     }
 
     #[test]
     fn provision_cache_path_includes_shell() {
         let envs = vec!["rust".to_string()];
-        let bash_path = provision_cache_path(&envs, "bash", false);
-        let fish_path = provision_cache_path(&envs, "fish", false);
+        let bash_path = provision_cache_path(&envs, "bash");
+        let fish_path = provision_cache_path(&envs, "fish");
         assert_ne!(bash_path, fish_path);
         assert!(fish_path.ends_with("cache/provisioned-rust+shell-fish.tar.gz"));
     }
 
     #[test]
-    fn provision_cache_path_includes_neovim() {
-        let envs = vec!["rust".to_string()];
-        let without = provision_cache_path(&envs, "bash", false);
-        let with = provision_cache_path(&envs, "bash", true);
-        assert_ne!(without, with);
-        assert!(with.ends_with("cache/provisioned-neovim+rust.tar.gz"));
+    fn user_plugins_dir_is_under_isola_home() {
+        assert_eq!(user_plugins_dir(), isola_home().join("plugins"));
+    }
+
+    #[test]
+    fn project_plugins_dir_is_correct() {
+        let path = project_plugins_dir(std::path::Path::new("/tmp/myproject"));
+        assert_eq!(path, PathBuf::from("/tmp/myproject/.isola/plugins"));
     }
 }

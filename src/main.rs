@@ -2,6 +2,7 @@ mod cli;
 mod commands;
 mod error;
 mod paths;
+mod plugin;
 mod progress;
 mod sandbox;
 

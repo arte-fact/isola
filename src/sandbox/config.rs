@@ -75,8 +75,6 @@ pub struct SandboxConfig {
     pub share_ssh: bool,
     #[serde(default)]
     pub shell: SandboxShell,
-    #[serde(default)]
-    pub install_neovim: bool,
 }
 
 impl SandboxConfig {
@@ -105,8 +103,6 @@ pub struct LocalConfig {
     pub shell: Option<SandboxShell>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub share_ssh: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub install_neovim: Option<bool>,
 }
 
 impl LocalConfig {
@@ -167,7 +163,6 @@ mod tests {
             environments: vec!["rust".to_string(), "nodejs".to_string()],
             share_ssh: true,
             shell: SandboxShell::Fish,
-            install_neovim: true,
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
@@ -179,7 +174,6 @@ mod tests {
         assert_eq!(deserialized.workspace, config.workspace);
         assert_eq!(deserialized.environments, config.environments);
         assert_eq!(deserialized.shell, SandboxShell::Fish);
-        assert!(deserialized.install_neovim);
     }
 
     #[test]
@@ -197,7 +191,6 @@ mod tests {
         assert!(config.environments.is_empty());
         // Backward compat: missing fields get defaults
         assert_eq!(config.shell, SandboxShell::Bash);
-        assert!(!config.install_neovim);
     }
 
     #[test]
@@ -247,7 +240,6 @@ mod tests {
             environments: Some(vec!["rust".to_string(), "nodejs".to_string()]),
             shell: Some(SandboxShell::Fish),
             share_ssh: Some(true),
-            install_neovim: Some(true),
         };
 
         let yaml = serde_yaml::to_string(&config).unwrap();
@@ -259,7 +251,6 @@ mod tests {
         );
         assert_eq!(deserialized.shell, Some(SandboxShell::Fish));
         assert_eq!(deserialized.share_ssh, Some(true));
-        assert_eq!(deserialized.install_neovim, Some(true));
     }
 
     #[test]
@@ -269,7 +260,6 @@ mod tests {
         assert_eq!(config.environments, Some(vec!["rust".to_string()]));
         assert!(config.shell.is_none());
         assert!(config.share_ssh.is_none());
-        assert!(config.install_neovim.is_none());
     }
 
     #[test]
@@ -297,7 +287,6 @@ mod tests {
             environments: Some(vec!["go".to_string()]),
             shell: Some(SandboxShell::Zsh),
             share_ssh: None,
-            install_neovim: None,
         };
 
         config.save(&dir).unwrap();

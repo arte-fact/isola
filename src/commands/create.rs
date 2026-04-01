@@ -4,15 +4,19 @@ use chrono::Utc;
 
 use crate::error::IsolaError;
 use crate::paths;
+use crate::plugin::PluginRegistry;
 use crate::sandbox::config::{SandboxConfig, SandboxShell};
 use crate::sandbox::rootfs;
 
-/// All available environment IDs
-pub const ALL_ENVIRONMENTS: &[&str] = &["rust", "nodejs", "python-uv", "go"];
-
-/// Create a sandbox with all environments (backward-compatible CLI)
+/// Create a sandbox with all non-neovim bundled environments (CLI shorthand)
 pub fn run(name: &str, workspace: Option<PathBuf>, no_cache: bool) -> Result<(), IsolaError> {
-    let envs: Vec<String> = ALL_ENVIRONMENTS.iter().map(|s| s.to_string()).collect();
+    let registry = PluginRegistry::load()?;
+    let envs: Vec<String> = registry
+        .available_names()
+        .into_iter()
+        .filter(|n| *n != "neovim")
+        .map(|s| s.to_string())
+        .collect();
     run_with_envs(
         name,
         workspace,
@@ -20,7 +24,7 @@ pub fn run(name: &str, workspace: Option<PathBuf>, no_cache: bool) -> Result<(),
         false,
         no_cache,
         &SandboxShell::default(),
-        false,
+        &registry,
     )
 }
 
@@ -32,7 +36,7 @@ pub fn run_with_envs(
     share_ssh: bool,
     no_cache: bool,
     shell: &SandboxShell,
-    install_neovim: bool,
+    registry: &PluginRegistry,
 ) -> Result<(), IsolaError> {
     use crate::progress::{self, CreationProgress};
 
@@ -54,11 +58,7 @@ pub fn run_with_envs(
     let layer_status = if no_cache {
         None
     } else {
-        Some(rootfs::check_layer_cache(
-            environments,
-            shell,
-            install_neovim,
-        ))
+        Some(rootfs::check_layer_cache(environments, shell, registry))
     };
 
     let used_layered_cache = if let Some(ref status) = layer_status
@@ -72,8 +72,7 @@ pub fn run_with_envs(
         progress.finish_step("Extracted cached layers");
         true
     } else if !no_cache
-        && let Some(cache_path) =
-            rootfs::has_cached_provision(environments, shell.name(), install_neovim)
+        && let Some(cache_path) = rootfs::has_cached_provision(environments, shell.name())
     {
         // Legacy fallback: monolithic cache exists
         progress.start_step("Extracting cached rootfs...");
@@ -94,26 +93,16 @@ pub fn run_with_envs(
         for layer_name in &status.uncached {
             let script = if layer_name == "base" {
                 rootfs::build_base_layer_script(shell)
-            } else if let Some(extra) = layer_name.strip_prefix("extra-") {
-                rootfs::build_extra_layer_script(extra)
-                    .ok_or_else(|| IsolaError::ConfigError(format!("unknown extra: {extra}")))?
             } else {
-                rootfs::build_env_layer_script(layer_name).ok_or_else(|| {
-                    IsolaError::ConfigError(format!("unknown environment: {layer_name}"))
+                rootfs::build_env_layer_script(layer_name, registry).ok_or_else(|| {
+                    IsolaError::PluginError(format!("no plugin found for '{layer_name}'"))
                 })?
             };
 
             progress.start_step(&format!("Provisioning {layer_name}..."));
 
             // Save config early so run_command_captured can find the sandbox
-            save_config(
-                name,
-                &workspace,
-                environments,
-                share_ssh,
-                shell,
-                install_neovim,
-            )?;
+            save_config(name, &workspace, environments, share_ssh, shell)?;
 
             let child = crate::commands::enter::run_command_captured(name, &script)?;
             let (exit_code, last_lines) =
@@ -131,7 +120,7 @@ pub fn run_with_envs(
                     Err(e) => progress.finish_step(&format!("Cache skipped: {e}")),
                 }
             } else {
-                match rootfs::cache_env_layer(name, layer_name, shell) {
+                match rootfs::cache_env_layer(name, layer_name, shell, registry) {
                     Ok(Some(_)) => {
                         progress.finish_step(&format!("Cached {layer_name} layer"));
                     }
@@ -156,23 +145,16 @@ pub fn run_with_envs(
 
     // Configure rootfs (sandbox-specific: hostname, git config, shell config, etc.)
     progress.start_step("Configuring rootfs...");
-    rootfs::post_setup_rootfs(&rootfs_path, name, shell, install_neovim)?;
+    rootfs::post_setup_rootfs(&rootfs_path, name, shell, environments, registry)?;
     progress.finish_step("Configured rootfs");
 
     // Save config (may already exist from partial layer build, save again to ensure latest)
-    save_config(
-        name,
-        &workspace,
-        environments,
-        share_ssh,
-        shell,
-        install_neovim,
-    )?;
+    save_config(name, &workspace, environments, share_ssh, shell)?;
 
     if used_layered_cache {
         // Layered path: fix ownership + set up PATH
         progress.start_step("Fixing ownership...");
-        let script = rootfs::build_layered_fixup_script(environments);
+        let script = rootfs::build_layered_fixup_script(environments, registry);
         let exit_code = crate::commands::enter::run_command(name, &script)?;
         if exit_code != 0 {
             return Err(IsolaError::ProvisionFailed(exit_code));
@@ -185,9 +167,7 @@ pub fn run_with_envs(
         } else {
             progress.finish_cached(environments);
         }
-    } else if !no_cache
-        && rootfs::has_cached_provision(environments, shell.name(), install_neovim).is_some()
-    {
+    } else if !no_cache && rootfs::has_cached_provision(environments, shell.name()).is_some() {
         // Legacy monolithic cache was used
         progress.start_step("Fixing ownership...");
         let script = rootfs::build_fixup_script();
@@ -200,7 +180,7 @@ pub fn run_with_envs(
     } else {
         // Full provisioning (no cache hit at all)
         progress.start_provision();
-        let script = rootfs::build_provision_script(environments, shell, install_neovim);
+        let script = rootfs::build_provision_script(environments, shell, registry);
         let child = crate::commands::enter::run_command_captured(name, &script)?;
         let (exit_code, last_lines) =
             progress::monitor_provisioning(child, &progress, environments)?;
@@ -214,14 +194,12 @@ pub fn run_with_envs(
         progress.start_step("Caching layers...");
         let mut cached_any = false;
 
-        // Cache the base layer (full rootfs tarball)
         match rootfs::cache_base_layer(name, shell) {
             Ok(_) => cached_any = true,
             Err(e) => eprintln!("  Warning: base layer cache failed: {e}"),
         }
 
-        // Also cache as legacy monolithic for backward compat
-        match rootfs::cache_provisioned_rootfs(name, environments, shell.name(), install_neovim) {
+        match rootfs::cache_provisioned_rootfs(name, environments, shell.name()) {
             Ok(()) => cached_any = true,
             Err(e) => eprintln!("  Warning: monolithic cache failed: {e}"),
         }
@@ -244,7 +222,6 @@ fn save_config(
     environments: &[String],
     share_ssh: bool,
     shell: &SandboxShell,
-    install_neovim: bool,
 ) -> Result<(), IsolaError> {
     let config = SandboxConfig {
         name: name.to_string(),
@@ -257,7 +234,6 @@ fn save_config(
         environments: environments.to_vec(),
         share_ssh,
         shell: shell.clone(),
-        install_neovim,
     };
     config.save()
 }
