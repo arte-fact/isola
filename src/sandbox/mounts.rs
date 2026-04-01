@@ -23,8 +23,6 @@ fn do_mount(
 pub fn setup_mounts(
     rootfs: &Path,
     workspace_host: Option<&Path>,
-    claude_binary: Option<&Path>,
-    session_credentials: Option<&Path>,
     ssh_dir: Option<&Path>,
 ) -> Result<(), IsolaError> {
     let none: Option<&str> = None;
@@ -163,22 +161,7 @@ pub fn setup_mounts(
         none,
     )?;
 
-    // 11. Bind-mount Claude binary (if provided)
-    if let Some(claude) = claude_binary {
-        let claude_target = rootfs.join("usr/local/bin/claude");
-        std::fs::create_dir_all(rootfs.join("usr/local/bin"))?;
-        std::fs::File::create(&claude_target)?;
-        do_mount(
-            "claude binary",
-            Some(&claude.to_string_lossy()),
-            &claude_target,
-            none,
-            MsFlags::MS_BIND,
-            none,
-        )?;
-    }
-
-    // 12. Bind-mount workspace (if provided)
+    // 11. Bind-mount workspace (if provided)
     if let Some(ws) = workspace_host {
         let ws_target = rootfs.join("workspace");
         std::fs::create_dir_all(&ws_target)?;
@@ -192,7 +175,7 @@ pub fn setup_mounts(
         )?;
     }
 
-    // 13. Bind-mount /etc/resolv.conf for live DNS
+    // 12. Bind-mount /etc/resolv.conf for live DNS
     let resolv_target = rootfs.join("etc/resolv.conf");
     if resolv_target.exists() {
         do_mount(
@@ -205,24 +188,7 @@ pub fn setup_mounts(
         )?;
     }
 
-    // 14. Bind-mount shared Claude session credentials.
-    // Always mount when provided (even if empty) so that new logins inside
-    // the sandbox are written to the shared session file on the host.
-    if let Some(creds) = session_credentials {
-        let creds_target = rootfs.join("home/sandbox/.claude/.credentials.json");
-        if creds.exists() && creds_target.exists() {
-            do_mount(
-                "claude credentials",
-                Some(&creds.to_string_lossy()),
-                &creds_target,
-                none,
-                MsFlags::MS_BIND,
-                none,
-            )?;
-        }
-    }
-
-    // 15. Bind-mount host SSH directory (read-only)
+    // 13. Bind-mount host SSH directory (read-only)
     if let Some(ssh) = ssh_dir
         && ssh.exists()
     {
@@ -237,13 +203,15 @@ pub fn setup_mounts(
             none,
         )?;
         // Remount read-only
-        let _ = mount(
+        if let Err(e) = mount(
             none,
             &ssh_target,
             none,
             MsFlags::MS_BIND | MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY | MsFlags::MS_REC,
             none,
-        );
+        ) {
+            eprintln!("warning: could not remount SSH directory read-only: {e}");
+        }
     }
 
     Ok(())

@@ -17,7 +17,7 @@ pub fn has_apparmor_profile() -> bool {
 }
 
 /// Generate AppArmor profile content for the isola binary at the given path
-fn generate_profile(binary_path: &str) -> String {
+pub(crate) fn generate_profile(binary_path: &str) -> String {
     format!(
         r#"abi <abi/4.0>,
 
@@ -92,4 +92,39 @@ pub fn run() -> Result<(), IsolaError> {
 
     eprintln!("AppArmor profile installed and loaded successfully.");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_contains_binary_path() {
+        let profile = generate_profile("/usr/local/bin/isola");
+        assert!(profile.contains("/usr/local/bin/isola"));
+    }
+
+    #[test]
+    fn profile_contains_userns_permission() {
+        let profile = generate_profile("/usr/local/bin/isola");
+        assert!(profile.contains("userns,"));
+    }
+
+    #[test]
+    fn profile_contains_abi_declaration() {
+        let profile = generate_profile("/usr/local/bin/isola");
+        assert!(profile.contains("abi <abi/4.0>"));
+    }
+
+    #[test]
+    fn profile_with_spaces_in_path() {
+        let profile = generate_profile("/home/my user/bin/isola");
+        assert!(profile.contains("/home/my user/bin/isola"));
+    }
+
+    #[test]
+    fn profile_has_unconfined_flag() {
+        let profile = generate_profile("/usr/bin/isola");
+        assert!(profile.contains("flags=(unconfined)"));
+    }
 }

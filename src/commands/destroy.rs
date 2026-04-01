@@ -30,16 +30,17 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
                     -exec rm -rf {} + 2>/dev/null; true"
                     .to_string(),
             ],
-            env_vars: build_env_vars(false, false),
+            env_vars: build_env_vars(false),
             workspace_host: None,
-            claude_binary: None,
-            session_credentials: None,
             ssh_dir: None,
             run_as_uid: None,
             multi_uid: true,
             capture_output: false,
         };
-        let _ = enter_sandbox(exec);
+        if let Err(e) = enter_sandbox(exec) {
+            eprintln!("warning: in-sandbox cleanup failed: {e}");
+            eprintln!("  (continuing with host-side deletion)");
+        }
     }
 
     // Now delete the sandbox directory from the host.  Most contents were

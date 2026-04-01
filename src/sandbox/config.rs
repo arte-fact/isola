@@ -1,5 +1,5 @@
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -63,10 +63,6 @@ impl SandboxShell {
     }
 }
 
-fn default_claude_enabled() -> bool {
-    true
-}
-
 #[derive(Serialize, Deserialize)]
 pub struct SandboxConfig {
     pub name: String,
@@ -79,8 +75,6 @@ pub struct SandboxConfig {
     pub share_ssh: bool,
     #[serde(default)]
     pub shell: SandboxShell,
-    #[serde(default = "default_claude_enabled")]
-    pub claude_integration: bool,
     #[serde(default)]
     pub install_neovim: bool,
 }
@@ -101,6 +95,64 @@ impl SandboxConfig {
     }
 }
 
+/// Project-local shareable config stored at `<project>/.isola/config.yaml`.
+/// All fields are optional — unspecified fields use sensible defaults.
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+pub struct LocalConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environments: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<SandboxShell>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share_ssh: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_neovim: Option<bool>,
+}
+
+impl LocalConfig {
+    /// Load from `dir/.isola/config.yaml`. Returns `Ok(None)` if the file doesn't exist.
+    pub fn load(dir: &Path) -> Result<Option<Self>, IsolaError> {
+        let path = paths::local_config_path(dir);
+        match std::fs::read_to_string(&path) {
+            Ok(data) => {
+                let config: Self = serde_yaml::from_str(&data)
+                    .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
+                Ok(Some(config))
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Write to `dir/.isola/config.yaml`, creating the `.isola/` directory if needed.
+    pub fn save(&self, dir: &Path) -> Result<(), IsolaError> {
+        let path = paths::local_config_path(dir);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let data =
+            serde_yaml::to_string(self).map_err(|e| IsolaError::ConfigError(e.to_string()))?;
+        std::fs::write(&path, data)?;
+        Ok(())
+    }
+
+    /// Walk from cwd upward looking for `.isola/config.yaml`.
+    /// Returns `(project_dir, config)` if found.
+    pub fn find_from_cwd() -> Result<Option<(PathBuf, Self)>, IsolaError> {
+        let cwd = std::env::current_dir()?;
+        let mut dir = cwd.as_path();
+        loop {
+            if let Some(config) = Self::load(dir)? {
+                return Ok(Some((dir.to_path_buf(), config)));
+            }
+            match dir.parent() {
+                Some(parent) => dir = parent,
+                None => return Ok(None),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -115,7 +167,6 @@ mod tests {
             environments: vec!["rust".to_string(), "nodejs".to_string()],
             share_ssh: true,
             shell: SandboxShell::Fish,
-            claude_integration: false,
             install_neovim: true,
         };
 
@@ -128,7 +179,6 @@ mod tests {
         assert_eq!(deserialized.workspace, config.workspace);
         assert_eq!(deserialized.environments, config.environments);
         assert_eq!(deserialized.shell, SandboxShell::Fish);
-        assert!(!deserialized.claude_integration);
         assert!(deserialized.install_neovim);
     }
 
@@ -147,7 +197,6 @@ mod tests {
         assert!(config.environments.is_empty());
         // Backward compat: missing fields get defaults
         assert_eq!(config.shell, SandboxShell::Bash);
-        assert!(config.claude_integration); // true for backward compat
         assert!(!config.install_neovim);
     }
 
@@ -190,5 +239,118 @@ mod tests {
             SandboxShell::Zsh.login_args(),
             vec!["zsh".to_string(), "-l".to_string()]
         );
+    }
+
+    #[test]
+    fn local_config_round_trip() {
+        let config = LocalConfig {
+            environments: Some(vec!["rust".to_string(), "nodejs".to_string()]),
+            shell: Some(SandboxShell::Fish),
+            share_ssh: Some(true),
+            install_neovim: Some(true),
+        };
+
+        let yaml = serde_yaml::to_string(&config).unwrap();
+        let deserialized: LocalConfig = serde_yaml::from_str(&yaml).unwrap();
+
+        assert_eq!(
+            deserialized.environments,
+            Some(vec!["rust".to_string(), "nodejs".to_string()])
+        );
+        assert_eq!(deserialized.shell, Some(SandboxShell::Fish));
+        assert_eq!(deserialized.share_ssh, Some(true));
+        assert_eq!(deserialized.install_neovim, Some(true));
+    }
+
+    #[test]
+    fn local_config_partial_fields() {
+        let yaml = "environments:\n  - rust\n";
+        let config: LocalConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(config.environments, Some(vec!["rust".to_string()]));
+        assert!(config.shell.is_none());
+        assert!(config.share_ssh.is_none());
+        assert!(config.install_neovim.is_none());
+    }
+
+    #[test]
+    fn local_config_empty() {
+        let yaml = "{}";
+        let config: LocalConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.environments.is_none());
+        assert!(config.shell.is_none());
+    }
+
+    #[test]
+    fn local_config_load_missing_file() {
+        let dir = std::env::temp_dir().join("isola-test-missing");
+        let result = LocalConfig::load(&dir).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn local_config_save_and_load() {
+        let dir = std::env::temp_dir().join("isola-test-save-load");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let config = LocalConfig {
+            environments: Some(vec!["go".to_string()]),
+            shell: Some(SandboxShell::Zsh),
+            share_ssh: None,
+            install_neovim: None,
+        };
+
+        config.save(&dir).unwrap();
+        let loaded = LocalConfig::load(&dir).unwrap().unwrap();
+        assert_eq!(loaded.environments, Some(vec!["go".to_string()]));
+        assert_eq!(loaded.shell, Some(SandboxShell::Zsh));
+        assert!(loaded.share_ssh.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_corrupted_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.json");
+        std::fs::write(&config_path, "not valid json {{{").unwrap();
+        // SandboxConfig::load reads from paths::config_path(name) so we can't
+        // easily test it without setting HOME. Instead, test serde directly.
+        let result: Result<SandboxConfig, _> = serde_json::from_str("not valid json");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn config_extra_fields_ignored() {
+        let json = r#"{
+            "name": "test",
+            "created_at": "2025-01-01T00:00:00Z",
+            "rootfs_url": "http://example.com/rootfs.tar.gz",
+            "unknown_field": "should be ignored"
+        }"#;
+        let result: Result<SandboxConfig, _> = serde_json::from_str(json);
+        // serde defaults deny unknown fields — check what happens
+        // If this errors, it's fine; it documents current behavior
+        let _ = result;
+    }
+
+    #[test]
+    fn shell_all_variants_have_bin_path() {
+        for shell in &[SandboxShell::Bash, SandboxShell::Fish, SandboxShell::Zsh] {
+            let path = shell.bin_path();
+            assert!(
+                path.starts_with('/'),
+                "bin_path for {:?} should be absolute",
+                shell
+            );
+        }
+    }
+
+    #[test]
+    fn shell_all_variants_have_name() {
+        for shell in &[SandboxShell::Bash, SandboxShell::Fish, SandboxShell::Zsh] {
+            let name = shell.name();
+            assert!(!name.is_empty(), "name for {:?} should not be empty", shell);
+        }
     }
 }

@@ -1,10 +1,10 @@
 # isola
 
-Persistent, isolated Linux sandboxes for running [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Each sandbox is a lightweight container built with Linux user namespaces — no Docker or root privileges required.
+Persistent, isolated Linux sandboxes for developers. Each sandbox is a lightweight container built with Linux user namespaces — no Docker or root privileges required.
 
 ## How it works
 
-`isola` downloads an Ubuntu 24.04 base rootfs, provisions it with your chosen development tools, and enters it via `clone()` with `CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS`. Your host project directory is bind-mounted at `/workspace` inside the sandbox. Claude Code runs as a non-root `sandbox` user with `--dangerously-skip-permissions`, fully isolated from your host system.
+`isola` downloads an Ubuntu 24.04 base rootfs, provisions it with your chosen development tools, and enters it via `clone()` with `CLONE_NEWUSER | CLONE_NEWPID | CLONE_NEWNS`. Your host project directory is bind-mounted at `/workspace` inside the sandbox. You work as a non-root `sandbox` user, fully isolated from your host system.
 
 Sandboxes are persistent — installed packages, config files, and everything outside `/workspace` survive across sessions.
 
@@ -15,14 +15,13 @@ Sandboxes are persistent — installed packages, config files, and everything ou
 │                                                     │
 │  ~/.isola/                                          │
 │    cache/            downloaded rootfs tarball       │
-│    session/          shared Claude credentials      │
 │    sandboxes/                                       │
 │      my-project/                                    │
 │        config.json   sandbox metadata               │
 │        rootfs/       Ubuntu 24.04 filesystem        │
 │                                                     │
 │  ┌─ Sandbox (user/PID/mount namespaces) ──────────┐ │
-│  │  PID 1: bash or claude                         │ │
+│  │  PID 1: <your shell>                           │ │
 │  │  UID 1000 (sandbox) → mapped to host UID       │ │
 │  │  /workspace ← host project (read-write)        │ │
 │  │  /proc, /sys, /dev ← isolated mounts          │ │
@@ -36,7 +35,6 @@ Sandboxes are persistent — installed packages, config files, and everything ou
 - Linux (x86_64)
 - Rust 2024 edition toolchain (to build)
 - `newuidmap` / `newgidmap` (optional — install with `sudo apt install uidmap` for multi-UID mapping; without it the sandbox uses a single-UID fallback)
-- Claude Code binary on `$PATH` or in `~/.local/bin/claude` (optional — falls back to a shell)
 
 ## Installation
 
@@ -58,17 +56,17 @@ The wizard will prompt you to:
 1. Name the sandbox (defaults to the directory name)
 2. Select development environments to install (Rust, Node.js, Python+uv, Go)
 3. Confirm the workspace directory to mount
-4. Optionally import your host Claude session and settings
+4. Choose your shell (bash, fish, zsh)
 
-Once created, the sandbox launches Claude Code automatically. On subsequent runs, `isola` detects the existing sandbox and enters it directly.
+Once created, the sandbox launches your shell automatically. On subsequent runs, `isola` detects the existing sandbox and enters it directly.
 
 ## Usage
 
 ```
 isola                              # Auto-detect sandbox or run setup wizard
 isola create <name> [-w <path>]    # Create a new sandbox
-isola enter <name> [--shell]       # Enter sandbox (Claude Code or shell)
-isola shell [<name>]               # Open a root shell (auto-detects sandbox from cwd)
+isola enter <name>                 # Enter sandbox
+isola shell [<name>]               # Open a shell (auto-detects sandbox from cwd)
 isola exec <name> -- <cmd...>      # Run a command inside a sandbox
 isola status <name>                # Show sandbox status
 isola reprovision <name>           # Re-run provisioning scripts
@@ -91,14 +89,11 @@ During setup you can choose which toolchains to provision (none selected by defa
 
 Base packages (git, curl, build-essential, ripgrep, fd, bat, etc.) are always installed.
 
-Each selected environment also adds language-specific best practices to the sandbox's `CLAUDE.md`, so Claude Code automatically follows idiomatic conventions (e.g. `cargo clippy` for Rust, `uv run` for Python, `gofmt` for Go).
-
 ## Sandbox layout
 
 ```
 ~/.isola/
   cache/                         # Downloaded rootfs tarballs
-  session/                       # Shared Claude credentials across sandboxes
   sandboxes/<name>/
     config.json                  # Sandbox metadata (name, workspace, environments)
     rootfs/                      # Ubuntu 24.04 root filesystem
@@ -121,14 +116,9 @@ Inside the sandbox:
 
 No setuid binaries, no daemon, no container runtime. Just `clone()` + `pivot_root()` + `execve()`.
 
-## Claude Code integration
+## Team sharing
 
-- The host Claude binary is automatically detected and bind-mounted into the sandbox
-- Claude Code runs with `--dangerously-skip-permissions` (safe since the sandbox is isolated)
-- Sandbox permissions are pre-configured to allow all Claude Code tools
-- Session credentials can be imported from the host during setup and are shared across sandboxes via `~/.isola/session/`
-- Host git identity is automatically inherited
-- `ANTHROPIC_API_KEY` and cloud provider env vars (AWS, Bedrock, Vertex) are forwarded into the sandbox
+The setup wizard saves a `.isola/config.yaml` in your project directory. Commit this file so teammates can create identical sandboxes by running `isola` in the project.
 
 ## License
 

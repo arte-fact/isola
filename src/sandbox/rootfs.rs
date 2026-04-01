@@ -94,57 +94,6 @@ apt-get install -y --no-install-recommends neovim || true
 dpkg --configure -a --force-overwrite 2>/dev/null || true
 "#;
 
-// --- CLAUDE.md language-specific fragments ---
-
-const CLAUDE_MD_RUST: &str = r#"
-## Rust
-- Build: `cargo build`, Test: `cargo test`, Lint: `cargo clippy -- -D warnings`, Format: `cargo fmt`
-- Use `thiserror` for library error types and `anyhow` for application-level errors; propagate with `?`
-- Never use `.unwrap()` in library code; use `.expect("reason")` only for true invariants
-- Prefer borrowing (`&T`, `&mut T`) over taking ownership; use `Cow<'_, str>` for conditional ownership
-- Use `Vec::with_capacity()` when the size is known; prefer `&str` over `String` where possible
-- Organize imports: std → external crates → local modules; no wildcard imports except preludes
-- Derive common traits (`Debug`, `Clone`, `PartialEq`) on public types
-- Never commit `dbg!()` or `println!()` debug statements
-- Run `cargo fmt` and `cargo clippy` before committing
-"#;
-
-const CLAUDE_MD_NODEJS: &str = r#"
-## Node.js
-- Use ES modules (`import`/`export`), not CommonJS (`require`)
-- Destructure imports when possible: `import { foo } from 'bar'`
-- Run `npm test` to run the test suite; prefer running single test files over the full suite for speed
-- Use `npm run lint` or `npx eslint .` for linting; use `npx prettier --write .` for formatting
-- Enable TypeScript strict mode (`"strict": true` in tsconfig.json) when using TypeScript
-- Use `async`/`await` over raw Promises or callbacks
-- Pin dependency versions in `package.json`; run `npm ci` for reproducible installs
-- Never commit `node_modules/` or `.env` files
-"#;
-
-const CLAUDE_MD_PYTHON_UV: &str = r#"
-## Python
-- Use `uv` exclusively for package management — never use pip, pip-tools, poetry, or conda
-- Install: `uv add <package>`, Remove: `uv remove <package>`, Sync: `uv sync`, Lock: `uv lock`
-- Run scripts with `uv run <script>.py`; run tools with `uv run <tool>` (pytest, ruff, mypy)
-- Launch a REPL with `uv run python`
-- Use `uv run ruff check .` for linting and `uv run ruff format .` for formatting
-- Use type hints on all function signatures; validate with `uv run mypy .`
-- Use `uv run pytest` to run tests; prefer `uv run pytest path/to/test.py` for single files
-- Never use bare `python` or `pip` commands — always go through `uv run`
-"#;
-
-const CLAUDE_MD_GO: &str = r#"
-## Go
-- Build: `go build ./...`, Test: `go test ./...`, Lint: `golangci-lint run` (if installed)
-- Format with `gofmt` — code must always be gofmt-compliant
-- Follow "accept interfaces, return structs" for flexible API design
-- Use explicit error handling with return values; check every error, never discard with `_`
-- Use `context.Context` as the first parameter for functions that do I/O or may be cancelled
-- Prefer table-driven tests with `t.Run()` subtests
-- Use `go vet ./...` before committing to catch common mistakes
-- Standard project layout: `cmd/` for entrypoints, `internal/` for private packages, `pkg/` for public libraries
-"#;
-
 /// Read the host's git user.name and user.email, returning a .gitconfig string if either is set.
 fn build_host_gitconfig() -> Option<String> {
     let name = std::process::Command::new("git")
@@ -284,79 +233,6 @@ chmod 440 /etc/sudoers.d/sandbox
     script
 }
 
-/// Build CLAUDE.md content based on selected environments
-pub fn build_claude_md(environments: &[String]) -> String {
-    let mut md = String::from(
-        r#"# Sandbox Environment
-
-You are running inside an isolated Linux sandbox (user namespace + PID namespace + mount namespace).
-
-## Environment
-- **OS**: Ubuntu 24.04 base
-- **User**: sandbox (non-root)
-- **Network**: Full unrestricted internet access (shared with host)
-- **Workspace**: /workspace (bind-mounted from host project directory, read-write)
-
-## Running privileged commands
-Use sudo only for **system-level** operations (installing packages, configuring services):
-```
-sudo apt-get install -y <package>
-```
-
-## Available Tools
-"#,
-    );
-
-    for env in environments {
-        match env.as_str() {
-            "rust" => md.push_str("- **Rust**: rustc + cargo (`/home/sandbox/.cargo/bin/`)\n"),
-            "nodejs" => md.push_str("- **Node.js**: v22 LTS (`/usr/bin/node`, `/usr/bin/npm`)\n"),
-            "python-uv" => md.push_str(
-                "- **Python**: python3 + uv (`/usr/bin/python3`, `/home/sandbox/.local/bin/uv`)\n",
-            ),
-            "go" => md.push_str("- **Go**: (`/usr/local/go/bin/go`)\n"),
-            _ => {}
-        }
-    }
-
-    md.push_str("- **CLI utilities**: git, curl, wget, jq, tree, htop, tmux, ripgrep (`rg`), fd (`fd`), bat, strace, lsof, ssh, zip/unzip\n");
-    md.push_str("- **System**: use sudo to install any additional packages with apt-get\n");
-
-    // Language-specific best practices
-    for env in environments {
-        match env.as_str() {
-            "rust" => md.push_str(CLAUDE_MD_RUST),
-            "nodejs" => md.push_str(CLAUDE_MD_NODEJS),
-            "python-uv" => md.push_str(CLAUDE_MD_PYTHON_UV),
-            "go" => md.push_str(CLAUDE_MD_GO),
-            _ => {}
-        }
-    }
-
-    md.push_str(
-        r#"
-## CRITICAL: Never use sudo on /workspace files
-**DO NOT** run sudo, chown, chmod, or any root command on files inside `/workspace`.
-The workspace is bind-mounted from the host. Running commands as root changes file
-ownership to a sandbox-internal UID that the host user cannot access, breaking
-permissions on BOTH sides. If you encounter permission errors on workspace files,
-the files were likely modified by a previous root command — ask the user to fix
-ownership from the host with `chown -R $(whoami) <path>`.
-
-All build tools, compilers, and version control commands should run as the
-normal sandbox user — never with sudo.
-
-## Important
-- Changes to `/workspace` are reflected on the host filesystem immediately.
-- Changes outside `/workspace` persist across sandbox sessions (persistent sandbox).
-- You cannot see or affect host processes. Your PID namespace is isolated.
-- You are free to run any command without restriction outside `/workspace`.
-"#,
-    );
-
-    md
-}
-
 /// Download and cache rootfs with progress UI.
 pub fn ensure_rootfs_cached_with_progress(
     progress: &crate::progress::CreationProgress,
@@ -411,7 +287,15 @@ fn verify_rootfs_checksum(path: &Path) -> Result<(), IsolaError> {
     // Fetch SHA256SUMS from Ubuntu
     let response = reqwest::blocking::get(ROOTFS_SHA256SUMS_URL);
     let sums_text = match response {
-        Ok(r) if r.status().is_success() => r.text().unwrap_or_default(),
+        Ok(r) if r.status().is_success() => match r.text() {
+            Ok(t) => t,
+            Err(_) => {
+                eprintln!(
+                    "warning: could not read SHA256SUMS response body, skipping verification"
+                );
+                return Ok(());
+            }
+        },
         _ => {
             eprintln!("warning: could not fetch SHA256SUMS for verification, skipping");
             return Ok(());
@@ -606,9 +490,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), IsolaError> {
 pub fn post_setup_rootfs(
     rootfs: &Path,
     name: &str,
-    environments: &[String],
     shell: &SandboxShell,
-    claude_integration: bool,
     install_neovim: bool,
 ) -> Result<(), IsolaError> {
     let host_resolv = std::fs::read_to_string("/etc/resolv.conf")?;
@@ -644,59 +526,6 @@ pub fn post_setup_rootfs(
         "usr/local/bin",
     ] {
         std::fs::create_dir_all(rootfs.join(dir))?;
-    }
-
-    // Claude Code integration (opt-in)
-    if claude_integration {
-        std::fs::create_dir_all(rootfs.join("root/.claude"))?;
-        std::fs::create_dir_all(rootfs.join("home/sandbox/.claude"))?;
-
-        // Create empty credentials file (bind-mount target for shared session)
-        std::fs::File::create(rootfs.join("home/sandbox/.claude/.credentials.json"))?;
-
-        // Claude Code requires .claude.json with hasCompletedOnboarding to recognise
-        // existing credentials; without it, it treats the session as a fresh install.
-        let claude_state = serde_json::json!({
-            "hasCompletedOnboarding": true,
-            "installMethod": "manual"
-        });
-        let claude_state_json = serde_json::to_string_pretty(&claude_state).unwrap();
-        std::fs::write(
-            rootfs.join("home/sandbox/.claude/.claude.json"),
-            &claude_state_json,
-        )?;
-        std::fs::write(rootfs.join("home/sandbox/.claude.json"), &claude_state_json)?;
-
-        // Claude Code settings
-        let claude_settings = serde_json::json!({
-            "permissions": {
-                "defaultMode": "bypassPermissions",
-                "allow": [
-                    "Bash",
-                    "Read",
-                    "Edit",
-                    "Write",
-                    "Glob",
-                    "Grep",
-                    "WebFetch",
-                    "WebSearch",
-                    "Agent",
-                    "NotebookEdit"
-                ],
-                "deny": []
-            }
-        });
-        let settings_json = serde_json::to_string_pretty(&claude_settings).unwrap();
-        std::fs::write(
-            rootfs.join("home/sandbox/.claude/settings.json"),
-            &settings_json,
-        )?;
-        std::fs::write(rootfs.join("root/.claude/settings.json"), &settings_json)?;
-
-        // CLAUDE.md (dynamic based on environments)
-        let claude_md = build_claude_md(environments);
-        std::fs::write(rootfs.join("home/sandbox/.claude/CLAUDE.md"), &claude_md)?;
-        std::fs::write(rootfs.join("workspace/CLAUDE.md"), &claude_md)?;
     }
 
     // Copy host shell configuration
@@ -789,6 +618,250 @@ pub fn build_fixup_script() -> String {
     "#!/bin/bash\nset -e\nchown -R 1000:1000 /home/sandbox/\n".to_string()
 }
 
+// --- Layered cache support ---
+
+/// Compute a short hash of a provisioning script fragment for cache keying.
+/// Returns the first 12 hex characters of SHA256(script_text).
+pub fn layer_version_hash(script_text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(script_text.as_bytes());
+    hasher.finish_hex()[..12].to_string()
+}
+
+/// Script fragment for capturing layer diff via marker file.
+const LAYER_CAPTURE_HEADER: &str = r#"#!/bin/bash
+set -eo pipefail
+export DEBIAN_FRONTEND=noninteractive
+export PATH="/root/.cargo/bin:/root/.local/bin:/usr/local/go/bin:$PATH"
+touch /tmp/.layer_marker
+sleep 1
+"#;
+
+const LAYER_CAPTURE_FOOTER: &str = r#"
+echo ">>> Capturing layer..."
+find / -xdev -newer /tmp/.layer_marker \
+    ! -path '/proc/*' ! -path '/sys/*' ! -path '/dev/*' ! -path '/tmp/*' \
+    ! -path '/workspace/*' ! -path '/run/*' \
+    -print0 2>/dev/null | \
+    tar czf /tmp/.layer_cache.tar.gz --null -T - 2>/dev/null || true
+echo "=== Layer complete ==="
+"#;
+
+/// Build a provisioning script for the base layer (packages + shell + user creation).
+pub fn build_base_layer_script(shell: &SandboxShell) -> String {
+    let mut script = String::from("#!/bin/bash\n");
+    script.push_str("export PATH=\"/root/.cargo/bin:/root/.local/bin:/usr/local/go/bin:$PATH\"\n");
+    script.push_str("export DEBIAN_FRONTEND=noninteractive\n");
+
+    script.push_str(PROVISION_BASE);
+
+    match shell {
+        SandboxShell::Fish => script.push_str(PROVISION_FISH),
+        SandboxShell::Zsh => script.push_str(PROVISION_ZSH),
+        SandboxShell::Bash => {}
+    }
+
+    // Create sandbox user
+    script.push_str(&format!(
+        r#"
+echo ">>> Creating sandbox user..."
+groupadd -g 1000 sandbox 2>/dev/null || true
+useradd -m -u 1000 -g 1000 -s {} sandbox 2>/dev/null || true"#,
+        shell.bin_path()
+    ));
+    script.push_str(
+        r#"
+if ! echo "sandbox:sandbox" | chpasswd 2>/dev/null; then
+    HASH='$6$isola$TE6K9kO1QWE0643fNqowg9NUHwMOHuZBO0UinG8mvQyjs.IYapfKU.jf8LMshE726lAsRVjWyyVw8X6r7rBr1.'
+    sed -i "s|^sandbox:[^:]*:|sandbox:${HASH}:|" /etc/shadow 2>/dev/null || true
+fi
+mkdir -p /etc/sudoers.d
+echo "sandbox ALL=(ALL:ALL) NOPASSWD:ALL" > /etc/sudoers.d/sandbox
+chmod 440 /etc/sudoers.d/sandbox
+"#,
+    );
+
+    script.push_str("echo \"=== Base layer complete ===\"\n");
+    script
+}
+
+/// Build a provisioning script for a single environment layer.
+/// The script uses a marker file to capture only the files changed by this layer.
+pub fn build_env_layer_script(env_name: &str) -> Option<String> {
+    let provision_fragment = match env_name {
+        "rust" => PROVISION_RUST,
+        "nodejs" => PROVISION_NODEJS,
+        "python-uv" => PROVISION_PYTHON_UV,
+        "go" => PROVISION_GO,
+        _ => return None,
+    };
+
+    let mut script = String::from(LAYER_CAPTURE_HEADER);
+    script.push_str(provision_fragment);
+
+    // Copy tools to sandbox user (env-specific)
+    match env_name {
+        "rust" => {
+            script.push_str("cp -r /root/.cargo /home/sandbox/.cargo 2>/dev/null || true\n");
+            script.push_str("cp -r /root/.rustup /home/sandbox/.rustup 2>/dev/null || true\n");
+            script.push_str("chown -R 1000:1000 /home/sandbox/.cargo /home/sandbox/.rustup 2>/dev/null || true\n");
+        }
+        "python-uv" => {
+            script.push_str("cp -r /root/.local /home/sandbox/.local 2>/dev/null || true\n");
+            script.push_str("chown -R 1000:1000 /home/sandbox/.local 2>/dev/null || true\n");
+        }
+        _ => {}
+    }
+
+    script.push_str(LAYER_CAPTURE_FOOTER);
+    Some(script)
+}
+
+/// Build a provisioning script for the neovim extra layer.
+pub fn build_extra_layer_script(extra_name: &str) -> Option<String> {
+    let provision_fragment = match extra_name {
+        "neovim" => PROVISION_NEOVIM,
+        _ => return None,
+    };
+
+    let mut script = String::from(LAYER_CAPTURE_HEADER);
+    script.push_str(provision_fragment);
+    script.push_str(LAYER_CAPTURE_FOOTER);
+    Some(script)
+}
+
+/// Status of the layered cache for a given configuration.
+pub struct LayerCacheStatus {
+    /// Layers that have cached tarballs, in extraction order.
+    pub cached: Vec<(String, PathBuf)>,
+    /// Layer names that need building.
+    pub uncached: Vec<String>,
+}
+
+impl LayerCacheStatus {
+    pub fn all_cached(&self) -> bool {
+        self.uncached.is_empty()
+    }
+}
+
+/// Compute the script text used for a layer's version hash.
+fn layer_script_text(layer_name: &str, shell: &SandboxShell) -> Option<String> {
+    match layer_name {
+        "base" => Some(build_base_layer_script(shell)),
+        "extra-neovim" => build_extra_layer_script("neovim"),
+        env_name => build_env_layer_script(env_name),
+    }
+}
+
+/// Check which layers are cached and which need building.
+pub fn check_layer_cache(
+    environments: &[String],
+    shell: &SandboxShell,
+    install_neovim: bool,
+) -> LayerCacheStatus {
+    let mut cached = Vec::new();
+    let mut uncached = Vec::new();
+
+    // Determine all needed layers in order: base, then envs (sorted), then extras
+    let mut layer_names = vec!["base".to_string()];
+    let mut sorted_envs: Vec<String> = environments.to_vec();
+    sorted_envs.sort();
+    layer_names.extend(sorted_envs);
+    if install_neovim {
+        layer_names.push("extra-neovim".to_string());
+    }
+
+    for name in &layer_names {
+        if let Some(script) = layer_script_text(name, shell) {
+            let hash = layer_version_hash(&script);
+            let path = paths::layer_cache_path(name, &hash, shell.name());
+            if path.exists() {
+                cached.push((name.clone(), path));
+            } else {
+                uncached.push(name.clone());
+            }
+        }
+    }
+
+    LayerCacheStatus { cached, uncached }
+}
+
+/// Build a fixup script that sets up combined PATH for all environments and fixes ownership.
+pub fn build_layered_fixup_script(environments: &[String]) -> String {
+    let mut script = String::from("#!/bin/bash\nset -e\n");
+
+    let mut path_parts = Vec::new();
+    if environments.iter().any(|e| e == "rust") {
+        path_parts.push("/home/sandbox/.cargo/bin");
+    }
+    if environments.iter().any(|e| e == "python-uv") {
+        path_parts.push("/home/sandbox/.local/bin");
+    }
+    if environments.iter().any(|e| e == "go") {
+        path_parts.push("/usr/local/go/bin");
+    }
+    path_parts.push("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
+
+    script.push_str(&format!(
+        "echo 'export PATH=\"{}\"' >> /home/sandbox/.bashrc\n",
+        path_parts.join(":")
+    ));
+    script.push_str(
+        "echo 'export PATH=\"/root/.cargo/bin:/root/.local/bin:/usr/local/go/bin:$PATH\"' >> /root/.bashrc\n",
+    );
+    script.push_str("chown -R 1000:1000 /home/sandbox/\n");
+    script
+}
+
+/// Cache the base layer by tarballing the entire rootfs.
+pub fn cache_base_layer(name: &str, shell: &SandboxShell) -> Result<PathBuf, IsolaError> {
+    let rootfs_path = paths::rootfs_dir(name);
+    let script = build_base_layer_script(shell);
+    let hash = layer_version_hash(&script);
+    let cache_path = paths::layer_cache_path("base", &hash, shell.name());
+
+    std::fs::create_dir_all(paths::layers_cache_dir())?;
+
+    let file = std::fs::File::create(&cache_path)?;
+    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+    let mut builder = tar::Builder::new(encoder);
+    builder.follow_symlinks(false);
+    builder
+        .append_dir_all(".", &rootfs_path)
+        .map_err(|e| IsolaError::ExtractionFailed(format!("base layer cache: {e}")))?;
+    builder
+        .into_inner()
+        .map_err(|e| IsolaError::ExtractionFailed(format!("base layer finalize: {e}")))?
+        .finish()
+        .map_err(|e| IsolaError::ExtractionFailed(format!("base layer compress: {e}")))?;
+
+    Ok(cache_path)
+}
+
+/// Move the layer tarball created inside the sandbox to the cache directory.
+pub fn cache_env_layer(
+    name: &str,
+    layer_name: &str,
+    shell: &SandboxShell,
+) -> Result<Option<PathBuf>, IsolaError> {
+    let rootfs_path = paths::rootfs_dir(name);
+    let layer_tar_in_rootfs = rootfs_path.join("tmp/.layer_cache.tar.gz");
+
+    if !layer_tar_in_rootfs.exists() {
+        return Ok(None);
+    }
+
+    let script = layer_script_text(layer_name, shell)
+        .ok_or_else(|| IsolaError::ConfigError(format!("unknown layer: {layer_name}")))?;
+    let hash = layer_version_hash(&script);
+    let cache_path = paths::layer_cache_path(layer_name, &hash, shell.name());
+
+    std::fs::create_dir_all(paths::layers_cache_dir())?;
+    std::fs::rename(&layer_tar_in_rootfs, &cache_path)?;
+
+    Ok(Some(cache_path))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -866,86 +939,156 @@ mod tests {
         assert!(script.contains("Installing neovim"));
     }
 
+    // --- Layered cache tests ---
+
     #[test]
-    fn claude_md_base_content() {
-        let md = build_claude_md(&[]);
-        assert!(md.contains("Sandbox Environment"));
-        assert!(md.contains("Ubuntu 24.04"));
-        assert!(md.contains("sudo"));
-        assert!(md.contains("apt-get"));
+    fn layer_version_hash_deterministic() {
+        let h1 = layer_version_hash("some script");
+        let h2 = layer_version_hash("some script");
+        assert_eq!(h1, h2);
+        assert_eq!(h1.len(), 12);
     }
 
     #[test]
-    fn claude_md_includes_selected_envs() {
+    fn layer_version_hash_changes_with_content() {
+        let h1 = layer_version_hash("script v1");
+        let h2 = layer_version_hash("script v2");
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn base_layer_script_contains_essentials() {
+        let script = build_base_layer_script(&SandboxShell::Bash);
+        assert!(script.contains("apt-get update"));
+        assert!(script.contains("Creating sandbox user"));
+        assert!(script.contains("groupadd"));
+        assert!(script.contains("/bin/bash"));
+    }
+
+    #[test]
+    fn base_layer_script_includes_shell() {
+        let fish = build_base_layer_script(&SandboxShell::Fish);
+        assert!(fish.contains("Installing fish shell"));
+        assert!(fish.contains("/usr/bin/fish"));
+
+        let zsh = build_base_layer_script(&SandboxShell::Zsh);
+        assert!(zsh.contains("Installing zsh"));
+    }
+
+    #[test]
+    fn env_layer_script_rust() {
+        let script = build_env_layer_script("rust").unwrap();
+        assert!(script.contains("Installing Rust"));
+        assert!(script.contains("cp -r /root/.cargo /home/sandbox/.cargo"));
+        assert!(script.contains(".layer_marker"));
+        assert!(script.contains(".layer_cache.tar.gz"));
+    }
+
+    #[test]
+    fn env_layer_script_nodejs() {
+        let script = build_env_layer_script("nodejs").unwrap();
+        assert!(script.contains("Installing Node.js"));
+        assert!(script.contains(".layer_marker"));
+    }
+
+    #[test]
+    fn env_layer_script_unknown_returns_none() {
+        assert!(build_env_layer_script("unknown").is_none());
+    }
+
+    #[test]
+    fn extra_layer_script_neovim() {
+        let script = build_extra_layer_script("neovim").unwrap();
+        assert!(script.contains("Installing neovim"));
+        assert!(script.contains(".layer_marker"));
+    }
+
+    #[test]
+    fn extra_layer_script_unknown_returns_none() {
+        assert!(build_extra_layer_script("unknown").is_none());
+    }
+
+    #[test]
+    fn layered_fixup_script_empty_envs() {
+        let script = build_layered_fixup_script(&[]);
+        assert!(script.contains("chown -R 1000:1000 /home/sandbox/"));
+        // No sandbox user PATH entries for envs
+        assert!(!script.contains("/home/sandbox/.cargo/bin"));
+    }
+
+    #[test]
+    fn layered_fixup_script_with_envs() {
         let envs = vec!["rust".to_string(), "go".to_string()];
-        let md = build_claude_md(&envs);
-        assert!(md.contains("Rust"));
-        assert!(md.contains("Go"));
-        assert!(!md.contains("Node.js"));
-        assert!(!md.contains("Python"));
+        let script = build_layered_fixup_script(&envs);
+        assert!(script.contains("/home/sandbox/.cargo/bin"));
+        assert!(script.contains("/usr/local/go/bin"));
+        assert!(!script.contains("/home/sandbox/.local/bin"));
     }
 
     #[test]
-    fn claude_md_all_envs() {
-        let envs = vec![
-            "rust".to_string(),
-            "nodejs".to_string(),
-            "python-uv".to_string(),
-            "go".to_string(),
-        ];
-        let md = build_claude_md(&envs);
-        assert!(md.contains("Rust"));
-        assert!(md.contains("Node.js"));
-        assert!(md.contains("Python"));
-        assert!(md.contains("Go"));
-    }
-
-    #[test]
-    fn claude_md_rust_best_practices() {
+    fn check_layer_cache_reports_all_layers() {
+        // All requested layers should appear in either cached or uncached
         let envs = vec!["rust".to_string()];
-        let md = build_claude_md(&envs);
-        assert!(md.contains("cargo clippy"));
-        assert!(md.contains("cargo fmt"));
-        assert!(md.contains("thiserror"));
-        assert!(!md.contains("uv run"));
-        assert!(!md.contains("gofmt"));
+        let status = check_layer_cache(&envs, &SandboxShell::Bash, false);
+        let total = status.cached.len() + status.uncached.len();
+        // base + rust = 2 total
+        assert_eq!(total, 2);
     }
 
     #[test]
-    fn claude_md_nodejs_best_practices() {
-        let envs = vec!["nodejs".to_string()];
-        let md = build_claude_md(&envs);
-        assert!(md.contains("ES modules"));
-        assert!(md.contains("npm test"));
-        assert!(!md.contains("cargo clippy"));
+    fn check_layer_cache_sorts_envs() {
+        let envs = vec!["nodejs".to_string(), "rust".to_string(), "go".to_string()];
+        let status = check_layer_cache(&envs, &SandboxShell::Bash, false);
+        // All layers (cached + uncached) should be base, go, nodejs, rust (sorted envs)
+        let mut all_names: Vec<String> = status
+            .cached
+            .iter()
+            .map(|(n, _)| n.clone())
+            .chain(status.uncached.iter().cloned())
+            .collect();
+        all_names.sort();
+        assert_eq!(all_names, vec!["base", "go", "nodejs", "rust"]);
+    }
+
+    // SHA256 test vectors from NIST / RFC 6234
+    #[test]
+    fn sha256_empty_string() {
+        let mut h = Sha256::new();
+        h.update(b"");
+        assert_eq!(
+            h.finish_hex(),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
     }
 
     #[test]
-    fn claude_md_python_best_practices() {
-        let envs = vec!["python-uv".to_string()];
-        let md = build_claude_md(&envs);
-        assert!(md.contains("uv add"));
-        assert!(md.contains("uv run"));
-        assert!(md.contains("never use pip"));
-        assert!(!md.contains("gofmt"));
+    fn sha256_abc() {
+        let mut h = Sha256::new();
+        h.update(b"abc");
+        assert_eq!(
+            h.finish_hex(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]
-    fn claude_md_go_best_practices() {
-        let envs = vec!["go".to_string()];
-        let md = build_claude_md(&envs);
-        assert!(md.contains("gofmt"));
-        assert!(md.contains("go test"));
-        assert!(md.contains("context.Context"));
-        assert!(!md.contains("cargo"));
+    fn sha256_long_message() {
+        let mut h = Sha256::new();
+        h.update(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
+        assert_eq!(
+            h.finish_hex(),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
     }
 
     #[test]
-    fn claude_md_no_envs_no_best_practices() {
-        let md = build_claude_md(&[]);
-        assert!(!md.contains("cargo clippy"));
-        assert!(!md.contains("npm test"));
-        assert!(!md.contains("uv run"));
-        assert!(!md.contains("gofmt"));
+    fn sha256_incremental_update() {
+        let mut h = Sha256::new();
+        h.update(b"abc");
+        h.update(b"dbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq");
+        assert_eq!(
+            h.finish_hex(),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
     }
 }

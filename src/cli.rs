@@ -25,16 +25,10 @@ pub enum Commands {
         #[arg(long)]
         no_cache: bool,
     },
-    /// Enter an existing sandbox (launches shell or Claude Code)
+    /// Enter an existing sandbox
     Enter {
         /// Name of the sandbox to enter
         name: String,
-        /// Launch a shell (overrides Claude integration config)
-        #[arg(long)]
-        shell: bool,
-        /// Launch Claude Code (overrides config)
-        #[arg(long, conflicts_with = "shell")]
-        claude: bool,
         /// Workspace directory to bind-mount (overrides config)
         #[arg(short, long)]
         workspace: Option<PathBuf>,

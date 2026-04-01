@@ -1,6 +1,6 @@
 # isola
 
-Persistent, isolated Linux sandboxes for Claude Code using user namespaces.
+Persistent, isolated Linux sandboxes for developers using user namespaces.
 
 ## Build & Test
 
@@ -22,16 +22,16 @@ Single-binary CLI (`isola`) with two main module trees:
 
 - `src/sandbox/` — low-level Linux namespace and filesystem operations
   - `namespace.rs` — `clone()` with `CLONE_NEWUSER|NEWPID|NEWNS`, `pivot_root()`, `execve()`
-  - `mounts.rs` — mount setup (proc, sys, dev, tmp, workspace bind-mount, Claude binary, credentials)
+  - `mounts.rs` — mount setup (proc, sys, dev, tmp, workspace bind-mount, SSH)
   - `userns.rs` — UID/GID mapping via `newuidmap`/`newgidmap` with single-UID fallback
-  - `rootfs.rs` — Ubuntu 24.04 rootfs download/caching, SHA256 verification, provisioning scripts, CLAUDE.md generation
+  - `rootfs.rs` — Ubuntu 24.04 rootfs download/caching, SHA256 verification, provisioning scripts
   - `config.rs` — `SandboxConfig` JSON serialization (name, workspace, environments, timestamps)
 
 - `src/commands/` — CLI subcommand implementations
   - `default.rs` — auto-detect sandbox from cwd or launch interactive wizard
   - `setup.rs` — interactive wizard (name, environments, workspace prompts via `inquire`)
   - `create.rs` — create sandbox: validate name, download rootfs, extract, provision
-  - `enter.rs` — enter sandbox: find Claude binary, build env vars, `enter_sandbox()`
+  - `enter.rs` — enter sandbox: build env vars, `enter_sandbox()`
   - `exec.rs` — run arbitrary command inside sandbox as UID 1000
   - `destroy.rs` — delete sandbox (chown via userns, then `remove_dir_all`)
   - `list.rs` / `status.rs` / `reprovision.rs` / `setup_host.rs`
@@ -46,8 +46,6 @@ Single-binary CLI (`isola`) with two main module trees:
 - Rootfs tarball is downloaded once and cached at `~/.isola/cache/`
 - Provisioning runs as root inside a user namespace, then sandbox enters as UID 1000 (`sandbox` user)
 - Workspace is bind-mounted from host at `/workspace`; changes are immediately reflected on host
-- Claude binary is bind-mounted from host into `/usr/local/bin/claude`
-- Session credentials are shared across sandboxes via `~/.isola/session/.credentials.json`
 
 ## Code conventions
 

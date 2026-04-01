@@ -35,7 +35,7 @@ pub fn run(
 
     let exec_path = command[0].clone();
     let exec_args = command.clone();
-    let env_vars = build_env_vars(true, config.claude_integration);
+    let env_vars = build_env_vars(true);
 
     let exec = SandboxExec {
         rootfs: rootfs.to_string_lossy().to_string(),
@@ -43,8 +43,6 @@ pub fn run(
         exec_args,
         env_vars,
         workspace_host: workspace.map(|p| p.to_string_lossy().to_string()),
-        claude_binary: None,
-        session_credentials: None,
         ssh_dir: ssh_dir.map(|p| p.to_string_lossy().to_string()),
         run_as_uid: Some(1000),
         multi_uid: true,

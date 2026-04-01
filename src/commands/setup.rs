@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use inquire::{Confirm, MultiSelect, Select, Text};
 
 use crate::paths;
-use crate::sandbox::config::SandboxShell;
+use crate::sandbox::config::{LocalConfig, SandboxShell};
 use crate::sandbox::rootfs;
 
 use crate::error::IsolaError;
@@ -140,73 +140,32 @@ pub fn run() -> Result<(), IsolaError> {
         false
     };
 
-    // 7. Claude Code integration
-    let claude_binary_available = crate::commands::enter::find_claude_binary().is_some();
-    let claude_integration = if claude_binary_available {
-        Confirm::new("Enable Claude Code integration?")
-            .with_default(false)
-            .with_help_message("Mounts Claude binary, credentials, and settings into the sandbox")
-            .prompt()
-            .map_err(|e| IsolaError::ConfigError(e.to_string()))?
-    } else {
-        false
-    };
-
-    // 8. Create sandbox with selected options
+    // 7. Create sandbox with selected options
     crate::commands::create::run_with_envs(
         &name,
-        Some(workspace_path),
+        Some(workspace_path.clone()),
         &env_ids,
         share_ssh,
         false,
         &shell,
-        claude_integration,
         install_neovim,
     )?;
 
-    // 9. Optionally import host Claude config
-    if claude_integration {
-        import_host_config(&name)?;
+    // 8. Save .isola/config.yaml for team sharing
+    if !paths::local_config_path(&workspace_path).exists() {
+        let local = LocalConfig {
+            environments: Some(env_ids.clone()),
+            shell: Some(shell.clone()),
+            share_ssh: Some(share_ssh),
+            install_neovim: Some(install_neovim),
+        };
+        local.save(&workspace_path)?;
+        eprintln!("Saved .isola/config.yaml — commit to share sandbox config with your team.");
     }
 
-    // 10. Enter the sandbox
-    if claude_integration {
-        eprintln!("Launching Claude Code...");
-        let code = crate::commands::enter::run(&name, false, Some(true), None)?;
-        crate::reset_terminal();
-        std::process::exit(code);
-    } else {
-        eprintln!("Launching {}...", shell.name());
-        let code = crate::commands::enter::run(&name, false, None, None)?;
-        crate::reset_terminal();
-        std::process::exit(code);
-    }
-}
-
-/// Offer to copy the host's Claude settings.json into the sandbox rootfs.
-fn import_host_config(name: &str) -> Result<(), IsolaError> {
-    let host_settings = paths::host_claude_settings();
-
-    // Skip if host has no settings
-    let host_data = match std::fs::read(&host_settings) {
-        Ok(data) if !data.is_empty() => data,
-        _ => return Ok(()),
-    };
-
-    let import = Confirm::new("Import Claude config from host? (keeps your settings/MCP servers)")
-        .with_default(true)
-        .prompt()
-        .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
-
-    if import {
-        let rootfs = paths::rootfs_dir(name);
-        for target_dir in &["home/sandbox/.claude", "root/.claude"] {
-            let target = rootfs.join(target_dir).join("settings.json");
-            std::fs::create_dir_all(rootfs.join(target_dir))?;
-            std::fs::write(&target, &host_data)?;
-        }
-        eprintln!("Config imported from {}", host_settings.display());
-    }
-
-    Ok(())
+    // 9. Enter the sandbox
+    eprintln!("Launching {}...", shell.name());
+    let code = crate::commands::enter::run(&name, None)?;
+    crate::reset_terminal();
+    std::process::exit(code);
 }

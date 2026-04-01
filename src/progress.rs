@@ -37,7 +37,7 @@ impl ProgressInner {
     /// Single atomic operation: erase previous live lines, draw new ones.
     /// Holds stderr lock for the entire sequence so nothing can interleave.
     fn render(&self) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         let mut stderr = std::io::stderr().lock();
         let mut buf = String::with_capacity(256);
 
@@ -67,7 +67,10 @@ impl ProgressInner {
     }
 
     fn tick(&self) {
-        self.state.lock().unwrap().tick_idx += 1;
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .tick_idx += 1;
         self.render();
     }
 
@@ -90,7 +93,7 @@ impl ProgressInner {
         self.ticking.store(false, Ordering::SeqCst);
         std::thread::sleep(Duration::from_millis(10));
         // Erase live lines
-        let state = self.state.lock().unwrap();
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
         if state.drawn_lines > 0 {
             let mut stderr = std::io::stderr().lock();
             let mut buf = String::new();
@@ -124,7 +127,7 @@ impl CreationProgress {
     pub fn start_step(&self, msg: &str) {
         self.inner.stop_tick();
         {
-            let mut state = self.inner.state.lock().unwrap();
+            let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
             state.spinner_msg = msg.to_string();
             state.detail_msg.clear();
             state.drawn_lines = 0;
@@ -140,7 +143,7 @@ impl CreationProgress {
     pub fn start_download(&self, total_bytes: u64) -> DownloadProgress {
         self.inner.stop_tick();
         {
-            let mut state = self.inner.state.lock().unwrap();
+            let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
             state.drawn_lines = 0;
         }
         DownloadProgress {
@@ -157,7 +160,7 @@ impl CreationProgress {
     pub fn start_provision(&self) {
         self.inner.stop_tick();
         {
-            let mut state = self.inner.state.lock().unwrap();
+            let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
             state.spinner_msg = "Provisioning...".to_string();
             state.detail_msg.clear();
             state.drawn_lines = 0;
@@ -166,14 +169,18 @@ impl CreationProgress {
     }
 
     pub fn set_provision_phase(&self, phase_num: usize, total: usize, name: &str) {
-        let mut state = self.inner.state.lock().unwrap();
+        let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
         state.spinner_msg = format!("Provisioning [{phase_num}/{total}] {name}...");
         state.detail_msg.clear();
     }
 
     pub fn set_provision_detail(&self, line: &str) {
         let truncated = truncate_to_width(line, 8);
-        self.inner.state.lock().unwrap().detail_msg = truncated;
+        self.inner
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .detail_msg = truncated;
     }
 
     pub fn finish_success(&self, environments: &[String]) {
@@ -272,7 +279,7 @@ impl DownloadProgress {
         };
 
         {
-            let mut state = self.inner.state.lock().unwrap();
+            let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
             state.spinner_msg = msg;
         }
         self.inner.render();
@@ -331,7 +338,7 @@ pub fn monitor_provisioning(
     Ok((exit_code, last_lines))
 }
 
-fn truncate_to_width(line: &str, indent: usize) -> String {
+pub(crate) fn truncate_to_width(line: &str, indent: usize) -> String {
     let width = console::Term::stderr().size().1.max(40) as usize;
     let available = width.saturating_sub(indent);
     if line.len() > available {
@@ -345,11 +352,76 @@ fn truncate_to_width(line: &str, indent: usize) -> String {
     }
 }
 
-fn format_duration(d: Duration) -> String {
+pub(crate) fn format_duration(d: Duration) -> String {
     let secs = d.as_secs();
     if secs < 60 {
         format!("{secs}s")
     } else {
         format!("{}m {}s", secs / 60, secs % 60)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn count_phases_empty_envs() {
+        assert_eq!(count_provision_phases(&[]), 5); // 3 base + 2 (user + verify)
+    }
+
+    #[test]
+    fn count_phases_known_envs() {
+        let envs = vec!["rust".into(), "nodejs".into()];
+        assert_eq!(count_provision_phases(&envs), 7); // 5 + 2
+    }
+
+    #[test]
+    fn count_phases_unknown_env_ignored() {
+        let envs = vec!["rust".into(), "unknown-env".into()];
+        assert_eq!(count_provision_phases(&envs), 6); // 5 + 1 (only rust)
+    }
+
+    #[test]
+    fn count_phases_all_envs() {
+        let envs = vec![
+            "rust".into(),
+            "nodejs".into(),
+            "python-uv".into(),
+            "go".into(),
+        ];
+        assert_eq!(count_provision_phases(&envs), 9); // 5 + 4
+    }
+
+    #[test]
+    fn format_duration_seconds() {
+        assert_eq!(format_duration(Duration::from_secs(42)), "42s");
+    }
+
+    #[test]
+    fn format_duration_zero() {
+        assert_eq!(format_duration(Duration::from_secs(0)), "0s");
+    }
+
+    #[test]
+    fn format_duration_exactly_60() {
+        assert_eq!(format_duration(Duration::from_secs(60)), "1m 0s");
+    }
+
+    #[test]
+    fn format_duration_minutes_and_seconds() {
+        assert_eq!(format_duration(Duration::from_secs(125)), "2m 5s");
+    }
+
+    #[test]
+    fn truncate_short_string_unchanged() {
+        let result = truncate_to_width("hello", 8);
+        assert_eq!(result, "hello");
+    }
+
+    #[test]
+    fn truncate_handles_empty_string() {
+        let result = truncate_to_width("", 8);
+        assert_eq!(result, "");
     }
 }

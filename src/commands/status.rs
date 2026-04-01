@@ -44,14 +44,6 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
             .unwrap_or(false)
     );
     println!("Shell: {}", config.shell.name());
-    println!(
-        "Claude integration: {}",
-        if config.claude_integration {
-            "enabled"
-        } else {
-            "disabled"
-        }
-    );
     if config.install_neovim {
         println!("Neovim: installed");
     }

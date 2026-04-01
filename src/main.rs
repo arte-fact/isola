@@ -9,7 +9,7 @@ use clap::{CommandFactory, Parser};
 use cli::{Cli, Commands};
 
 /// Reset terminal to a sane state after the sandbox child exits.
-/// Claude Code or interactive shells may leave the terminal in raw mode,
+/// Interactive shells may leave the terminal in raw mode,
 /// alternate screen, or with modified attributes.
 pub fn reset_terminal() {
     // \x1b[?1049l  — leave alternate screen buffer
@@ -35,21 +35,13 @@ fn main() {
             workspace,
             no_cache,
         }) => commands::create::run(&name, workspace, no_cache),
-        Some(Commands::Enter {
-            name,
-            shell,
-            claude,
-            workspace,
-        }) => {
-            let force_claude = if claude { Some(true) } else { None };
-            match commands::enter::run(&name, shell, force_claude, workspace) {
-                Ok(code) => {
-                    reset_terminal();
-                    std::process::exit(code);
-                }
-                Err(e) => Err(e),
+        Some(Commands::Enter { name, workspace }) => match commands::enter::run(&name, workspace) {
+            Ok(code) => {
+                reset_terminal();
+                std::process::exit(code);
             }
-        }
+            Err(e) => Err(e),
+        },
         Some(Commands::Shell { name }) => {
             let name = match name.or_else(|| commands::default::detect_sandbox().ok().flatten()) {
                 Some(n) => n,
@@ -60,7 +52,7 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            match commands::enter::run(&name, true, None, None) {
+            match commands::enter::run(&name, None) {
                 Ok(code) => {
                     reset_terminal();
                     std::process::exit(code);

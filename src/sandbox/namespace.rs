@@ -20,8 +20,6 @@ pub struct SandboxExec {
     pub exec_args: Vec<String>,
     pub env_vars: Vec<String>,
     pub workspace_host: Option<String>,
-    pub claude_binary: Option<String>,
-    pub session_credentials: Option<String>,
     /// Host ~/.ssh directory to bind-mount read-only into the sandbox.
     pub ssh_dir: Option<String>,
     pub run_as_uid: Option<u32>,
@@ -41,11 +39,41 @@ pub struct SandboxChild {
 impl SandboxChild {
     /// Wait for the child to exit and return its exit code.
     pub fn wait(self) -> Result<i32, IsolaError> {
-        let status = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(self.pid), None)?;
+        let status = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(self.pid), None)
+            .map_err(|e| IsolaError::NamespaceError(format!("waitpid failed: {e}")))?;
         match status {
             nix::sys::wait::WaitStatus::Exited(_, code) => Ok(code),
             _ => Ok(1),
         }
+    }
+}
+
+/// Guard that kills and reaps a child process on drop unless disarmed.
+/// Prevents zombie processes when parent-side setup fails after clone().
+struct ChildGuard {
+    pid: i32,
+}
+
+impl ChildGuard {
+    fn new(pid: i32) -> Self {
+        Self { pid }
+    }
+
+    /// Disarm the guard, returning the pid without killing the child.
+    fn disarm(self) -> i32 {
+        let pid = self.pid;
+        std::mem::forget(self);
+        pid
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        let _ = nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(self.pid),
+            nix::sys::signal::Signal::SIGKILL,
+        );
+        let _ = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(self.pid), None);
     }
 }
 
@@ -58,8 +86,6 @@ struct ChildArgs {
     exec_args: Vec<CString>,
     env_vars: Vec<CString>,
     workspace_host: Option<CString>,
-    claude_binary: Option<CString>,
-    session_credentials: Option<CString>,
     ssh_dir: Option<CString>,
     run_as_uid: Option<u32>,
 }
@@ -86,16 +112,6 @@ pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, IsolaError> {
             .as_ref()
             .map(|s| to_cstring(s, "workspace path"))
             .transpose()?,
-        claude_binary: exec
-            .claude_binary
-            .as_ref()
-            .map(|s| to_cstring(s, "claude binary path"))
-            .transpose()?,
-        session_credentials: exec
-            .session_credentials
-            .as_ref()
-            .map(|s| to_cstring(s, "session credentials path"))
-            .transpose()?,
         ssh_dir: exec
             .ssh_dir
             .as_ref()
@@ -105,7 +121,8 @@ pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, IsolaError> {
     };
 
     // Create sync pipe
-    let (pipe_read, pipe_write) = nix::unistd::pipe()?;
+    let (pipe_read, pipe_write) = nix::unistd::pipe()
+        .map_err(|e| IsolaError::NamespaceError(format!("pipe() failed: {e}")))?;
 
     let pipe_read_raw = pipe_read.as_raw_fd();
     let pipe_write_raw = pipe_write.as_raw_fd();
@@ -143,6 +160,9 @@ pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, IsolaError> {
         )));
     }
 
+    // Guard kills + reaps the child if we return early due to an error.
+    let guard = ChildGuard::new(child_pid);
+
     // Parent: close read end
     drop(pipe_read);
 
@@ -150,11 +170,16 @@ pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, IsolaError> {
     let got_multi_uid = userns::write_id_mappings(child_pid, exec.multi_uid)?;
 
     // Signal child: 1 = multi-UID active, 0 = single-UID fallback
-    nix::unistd::write(&pipe_write, &[if got_multi_uid { 1u8 } else { 0u8 }])?;
+    nix::unistd::write(&pipe_write, &[if got_multi_uid { 1u8 } else { 0u8 }])
+        .map_err(|e| IsolaError::NamespaceError(format!("sync pipe write failed: {e}")))?;
     drop(pipe_write);
 
+    // Disarm the guard — we'll wait on the child ourselves.
+    guard.disarm();
+
     // Wait for child
-    let status = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(child_pid), None)?;
+    let status = nix::sys::wait::waitpid(nix::unistd::Pid::from_raw(child_pid), None)
+        .map_err(|e| IsolaError::NamespaceError(format!("waitpid failed: {e}")))?;
 
     match status {
         nix::sys::wait::WaitStatus::Exited(_, code) => Ok(code),
@@ -197,14 +222,6 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
             .as_ref()
             .and_then(|s| s.to_str().ok())
             .map(Path::new),
-        args.claude_binary
-            .as_ref()
-            .and_then(|s| s.to_str().ok())
-            .map(Path::new),
-        args.session_credentials
-            .as_ref()
-            .and_then(|s| s.to_str().ok())
-            .map(Path::new),
         args.ssh_dir
             .as_ref()
             .and_then(|s| s.to_str().ok())
@@ -241,9 +258,15 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
     // Redirect stdout+stderr to output pipe if requested
     if args.output_pipe_write >= 0 {
         unsafe {
-            libc::dup2(args.output_pipe_write, 1);
-            libc::dup2(args.output_pipe_write, 2);
-            libc::close(args.output_pipe_write);
+            if libc::dup2(args.output_pipe_write, 1) < 0 {
+                libc::_exit(126);
+            }
+            if libc::dup2(args.output_pipe_write, 2) < 0 {
+                libc::_exit(126);
+            }
+            if args.output_pipe_write > 2 {
+                libc::close(args.output_pipe_write);
+            }
         }
     }
 
@@ -251,7 +274,8 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
     let args_refs: Vec<&std::ffi::CStr> = args.exec_args.iter().map(|s| s.as_c_str()).collect();
     let env_refs: Vec<&std::ffi::CStr> = args.env_vars.iter().map(|s| s.as_c_str()).collect();
 
-    nix::unistd::execve(&args.exec_path, &args_refs, &env_refs)?;
+    nix::unistd::execve(&args.exec_path, &args_refs, &env_refs)
+        .map_err(|e| IsolaError::NamespaceError(format!("execve failed: {e}")))?;
     unreachable!()
 }
 
@@ -262,7 +286,8 @@ pub fn spawn_sandbox(exec: SandboxExec) -> Result<SandboxChild, IsolaError> {
 
     // Create output pipe if capturing
     let (output_read, output_write) = if capture {
-        let (r, w) = nix::unistd::pipe()?;
+        let (r, w) = nix::unistd::pipe()
+            .map_err(|e| IsolaError::NamespaceError(format!("output pipe() failed: {e}")))?;
         (Some(r), Some(w))
     } else {
         (None, None)
@@ -291,16 +316,6 @@ pub fn spawn_sandbox(exec: SandboxExec) -> Result<SandboxChild, IsolaError> {
             .as_ref()
             .map(|s| to_cstring(s, "workspace path"))
             .transpose()?,
-        claude_binary: exec
-            .claude_binary
-            .as_ref()
-            .map(|s| to_cstring(s, "claude binary path"))
-            .transpose()?,
-        session_credentials: exec
-            .session_credentials
-            .as_ref()
-            .map(|s| to_cstring(s, "session credentials path"))
-            .transpose()?,
         ssh_dir: exec
             .ssh_dir
             .as_ref()
@@ -309,7 +324,8 @@ pub fn spawn_sandbox(exec: SandboxExec) -> Result<SandboxChild, IsolaError> {
         run_as_uid: exec.run_as_uid,
     };
 
-    let (pipe_read, pipe_write) = nix::unistd::pipe()?;
+    let (pipe_read, pipe_write) = nix::unistd::pipe()
+        .map_err(|e| IsolaError::NamespaceError(format!("sync pipe() failed: {e}")))?;
     let pipe_read_raw = pipe_read.as_raw_fd();
     let pipe_write_raw = pipe_write.as_raw_fd();
 
@@ -340,6 +356,9 @@ pub fn spawn_sandbox(exec: SandboxExec) -> Result<SandboxChild, IsolaError> {
         )));
     }
 
+    // Guard kills + reaps the child if we return early due to an error.
+    let guard = ChildGuard::new(child_pid);
+
     // Parent: close read end of sync pipe
     drop(pipe_read);
 
@@ -350,8 +369,12 @@ pub fn spawn_sandbox(exec: SandboxExec) -> Result<SandboxChild, IsolaError> {
     let got_multi_uid = userns::write_id_mappings(child_pid, exec.multi_uid)?;
 
     // Signal child
-    nix::unistd::write(&pipe_write, &[if got_multi_uid { 1u8 } else { 0u8 }])?;
+    nix::unistd::write(&pipe_write, &[if got_multi_uid { 1u8 } else { 0u8 }])
+        .map_err(|e| IsolaError::NamespaceError(format!("sync pipe write failed: {e}")))?;
     drop(pipe_write);
+
+    // Disarm the guard — caller takes ownership of the child via SandboxChild.
+    guard.disarm();
 
     // Build output File from read end
     let output_file = output_read.map(|r| {
@@ -368,15 +391,19 @@ pub fn spawn_sandbox(exec: SandboxExec) -> Result<SandboxChild, IsolaError> {
 }
 
 fn do_pivot_root(rootfs: &Path) -> Result<(), IsolaError> {
-    nix::unistd::chdir(rootfs)?;
+    nix::unistd::chdir(rootfs)
+        .map_err(|e| IsolaError::NamespaceError(format!("chdir to rootfs failed: {e}")))?;
 
     let old_root = rootfs.join(".old_root");
     std::fs::create_dir_all(&old_root)?;
 
-    nix::unistd::pivot_root(".", ".old_root")?;
-    nix::unistd::chdir("/")?;
+    nix::unistd::pivot_root(".", ".old_root")
+        .map_err(|e| IsolaError::NamespaceError(format!("pivot_root failed: {e}")))?;
+    nix::unistd::chdir("/")
+        .map_err(|e| IsolaError::NamespaceError(format!("chdir to / failed: {e}")))?;
 
-    nix::mount::umount2("/.old_root", nix::mount::MntFlags::MNT_DETACH)?;
+    nix::mount::umount2("/.old_root", nix::mount::MntFlags::MNT_DETACH)
+        .map_err(IsolaError::MountError)?;
     std::fs::remove_dir("/.old_root")?;
 
     Ok(())

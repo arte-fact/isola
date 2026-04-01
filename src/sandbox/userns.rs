@@ -133,3 +133,96 @@ pub fn write_id_mappings(child_pid: i32, multi_uid: bool) -> Result<bool, IsolaE
 
     Ok(false)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn parse_valid_entry_by_username() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_else(|_| "nobody".to_string());
+        writeln!(f, "{user}:100000:65536").unwrap();
+        let (start, count) = parse_subordinate_ids(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(start, 100000);
+        assert_eq!(count, 65536);
+    }
+
+    #[test]
+    fn parse_valid_entry_by_uid() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        let uid = nix::unistd::getuid().as_raw();
+        writeln!(f, "{uid}:200000:1000").unwrap();
+        let (start, count) = parse_subordinate_ids(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(start, 200000);
+        assert_eq!(count, 1000);
+    }
+
+    #[test]
+    fn parse_no_matching_user() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        writeln!(f, "nonexistentuser:100000:65536").unwrap();
+        let result = parse_subordinate_ids(f.path().to_str().unwrap());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("No subordinate ID range found"));
+    }
+
+    #[test]
+    fn parse_malformed_count() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_else(|_| "nobody".to_string());
+        writeln!(f, "{user}:100000:notanumber").unwrap();
+        let result = parse_subordinate_ids(f.path().to_str().unwrap());
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("Invalid subordinate count"));
+    }
+
+    #[test]
+    fn parse_empty_file() {
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let result = parse_subordinate_ids(f.path().to_str().unwrap());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_multiple_entries_first_match() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_else(|_| "nobody".to_string());
+        writeln!(f, "otheruser:50000:1000").unwrap();
+        writeln!(f, "{user}:100000:65536").unwrap();
+        writeln!(f, "{user}:200000:10000").unwrap();
+        let (start, count) = parse_subordinate_ids(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(start, 100000);
+        assert_eq!(count, 65536);
+    }
+
+    #[test]
+    fn parse_missing_file() {
+        let result = parse_subordinate_ids("/nonexistent/path/subuid");
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("Failed to read"));
+    }
+
+    #[test]
+    fn parse_short_line_skipped() {
+        let mut f = tempfile::NamedTempFile::new().unwrap();
+        let user = std::env::var("USER")
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_else(|_| "nobody".to_string());
+        writeln!(f, "{user}:100000").unwrap(); // Only 2 fields
+        writeln!(f, "{user}:200000:500").unwrap();
+        let (start, count) = parse_subordinate_ids(f.path().to_str().unwrap()).unwrap();
+        assert_eq!(start, 200000);
+        assert_eq!(count, 500);
+    }
+}

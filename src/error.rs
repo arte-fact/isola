@@ -33,8 +33,63 @@ pub enum IsolaError {
     ProvisionFailed(i32),
 }
 
-impl From<nix::Error> for IsolaError {
-    fn from(e: nix::Error) -> Self {
-        IsolaError::MountError(e)
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sandbox_exists_display() {
+        let e = IsolaError::SandboxExists("test".into());
+        assert_eq!(e.to_string(), "Sandbox 'test' already exists");
+    }
+
+    #[test]
+    fn sandbox_not_found_display() {
+        let e = IsolaError::SandboxNotFound("dev".into());
+        assert_eq!(e.to_string(), "Sandbox 'dev' not found");
+    }
+
+    #[test]
+    fn invalid_name_display() {
+        let e = IsolaError::InvalidName("a/b".into(), "contains slash".into());
+        assert_eq!(e.to_string(), "Invalid sandbox name 'a/b': contains slash");
+    }
+
+    #[test]
+    fn extraction_failed_display() {
+        let e = IsolaError::ExtractionFailed("corrupt tarball".into());
+        assert_eq!(e.to_string(), "Rootfs extraction failed: corrupt tarball");
+    }
+
+    #[test]
+    fn namespace_error_display() {
+        let e = IsolaError::NamespaceError("clone() failed".into());
+        assert_eq!(e.to_string(), "Namespace setup failed: clone() failed");
+    }
+
+    #[test]
+    fn config_error_display() {
+        let e = IsolaError::ConfigError("missing field".into());
+        assert_eq!(e.to_string(), "Configuration error: missing field");
+    }
+
+    #[test]
+    fn provision_failed_display() {
+        let e = IsolaError::ProvisionFailed(127);
+        assert_eq!(e.to_string(), "Provisioning failed with exit code 127");
+    }
+
+    #[test]
+    fn io_error_from_conversion() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
+        let e: IsolaError = io_err.into();
+        assert!(matches!(e, IsolaError::Io(_)));
+        assert!(e.to_string().contains("file not found"));
+    }
+
+    #[test]
+    fn mount_error_display() {
+        let e = IsolaError::MountError(nix::Error::EACCES);
+        assert!(e.to_string().contains("Mount operation failed"));
     }
 }
