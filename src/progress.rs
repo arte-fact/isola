@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use console::style;
 
 use crate::error::IsolaError;
-use crate::sandbox::namespace::SandboxChild;
+use crate::sandbox::linux::namespace::SandboxChild;
 
 const TICK_STRINGS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 

@@ -59,10 +59,12 @@ pub struct PluginPaths {
     /// Files/directories to copy from host $HOME into the sandbox rootfs
     /// before provisioning. `from` is relative to $HOME, `to` is relative
     /// to /home/sandbox/ inside the rootfs.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     #[serde(default)]
     pub host_copy: Vec<CopyEntry>,
     /// Files or directories to bind-mount from host $HOME into the sandbox at
     /// entry time. `from` is relative to $HOME, `to` is relative to /home/sandbox/.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     #[serde(default)]
     pub host_mount: Vec<MountEntry>,
 }
@@ -73,6 +75,7 @@ pub struct CopyEntry {
     pub to: String,
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 #[derive(Debug, Clone, Deserialize)]
 pub struct MountEntry {
     pub from: String,
@@ -443,16 +446,40 @@ mod tests {
     fn plugin_layers_correct() {
         let registry = PluginRegistry::load().unwrap();
 
-        assert_eq!(registry.get("fish").unwrap().manifest.layer, PluginLayer::Shell);
-        assert_eq!(registry.get("zsh").unwrap().manifest.layer, PluginLayer::Shell);
+        assert_eq!(
+            registry.get("fish").unwrap().manifest.layer,
+            PluginLayer::Shell
+        );
+        assert_eq!(
+            registry.get("zsh").unwrap().manifest.layer,
+            PluginLayer::Shell
+        );
 
-        assert_eq!(registry.get("ssh-keys").unwrap().manifest.layer, PluginLayer::User);
-        assert_eq!(registry.get("git-config").unwrap().manifest.layer, PluginLayer::User);
-        assert_eq!(registry.get("fish-config").unwrap().manifest.layer, PluginLayer::User);
+        assert_eq!(
+            registry.get("ssh-keys").unwrap().manifest.layer,
+            PluginLayer::User
+        );
+        assert_eq!(
+            registry.get("git-config").unwrap().manifest.layer,
+            PluginLayer::User
+        );
+        assert_eq!(
+            registry.get("fish-config").unwrap().manifest.layer,
+            PluginLayer::User
+        );
 
-        assert_eq!(registry.get("rust").unwrap().manifest.layer, PluginLayer::Project);
-        assert_eq!(registry.get("git").unwrap().manifest.layer, PluginLayer::Project);
-        assert_eq!(registry.get("chromium").unwrap().manifest.layer, PluginLayer::Project);
+        assert_eq!(
+            registry.get("rust").unwrap().manifest.layer,
+            PluginLayer::Project
+        );
+        assert_eq!(
+            registry.get("git").unwrap().manifest.layer,
+            PluginLayer::Project
+        );
+        assert_eq!(
+            registry.get("chromium").unwrap().manifest.layer,
+            PluginLayer::Project
+        );
     }
 
     #[test]

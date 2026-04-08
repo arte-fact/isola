@@ -1,52 +1,22 @@
 use std::path::PathBuf;
 
 use crate::error::IsolaError;
-use crate::paths;
-use crate::plugin::PluginRegistry;
+use crate::sandbox::backend;
 use crate::sandbox::config::SandboxConfig;
-use crate::sandbox::namespace::{SandboxExec, enter_sandbox};
 
 pub fn run(name: &str, workspace: Option<PathBuf>) -> Result<i32, IsolaError> {
-    let rootfs = paths::rootfs_dir(name);
-    if !rootfs.exists() {
-        return Err(IsolaError::SandboxNotFound(name.to_string()));
-    }
-
     let config = SandboxConfig::load(name)?;
     let workspace = workspace.or(config.workspace);
 
-    // Collect plugin-declared host bind-mounts (includes ssh-keys, git-config, etc.)
-    let host_mounts = collect_host_mounts(&config.environments);
-
-    let mut env_vars = build_env_vars(true);
-    env_vars.push(format!("ISOLA_SANDBOX={}", config.name));
-    if config.share_display {
-        for var in &["DISPLAY", "WAYLAND_DISPLAY", "XDG_SESSION_TYPE"] {
-            if let Ok(val) = std::env::var(var) {
-                env_vars.push(format!("{var}={val}"));
-            }
-        }
-        env_vars.push("XAUTHORITY=/home/sandbox/.Xauthority".to_string());
-    }
-
-    let exec = SandboxExec {
-        rootfs: rootfs.to_string_lossy().to_string(),
-        exec_path: config.shell.bin_path().to_string(),
-        exec_args: config.shell.login_args(),
-        env_vars,
-        workspace_host: workspace.map(|p| p.to_string_lossy().to_string()),
-        host_mounts,
-        share_display: config.share_display,
-        run_as_uid: Some(1000u32),
-        multi_uid: true,
-        capture_output: false,
-    };
-
-    enter_sandbox(exec)
+    let b = backend::create_backend();
+    b.enter_interactive(name, false, workspace.as_deref())
 }
 
 /// Collect host_mount entries from the given environments' plugins.
+#[cfg(target_os = "linux")]
 pub fn collect_host_mounts(environments: &[String]) -> Vec<(String, String, bool)> {
+    use crate::plugin::PluginRegistry;
+
     let Ok(registry) = PluginRegistry::load() else {
         return vec![];
     };
@@ -64,18 +34,19 @@ pub fn collect_host_mounts(environments: &[String]) -> Vec<(String, String, bool
 }
 
 /// Enter sandbox to run a command with captured stdout+stderr (used by progress UI).
+#[cfg(target_os = "linux")]
 pub fn run_command_captured(
     name: &str,
     command: &str,
-) -> Result<crate::sandbox::namespace::SandboxChild, IsolaError> {
-    let rootfs = paths::rootfs_dir(name);
+) -> Result<crate::sandbox::linux::namespace::SandboxChild, IsolaError> {
+    let rootfs = crate::paths::rootfs_dir(name);
     if !rootfs.exists() {
         return Err(IsolaError::SandboxNotFound(name.to_string()));
     }
 
     let env_vars = build_env_vars(false);
 
-    let exec = SandboxExec {
+    let exec = crate::sandbox::linux::namespace::SandboxExec {
         rootfs: rootfs.to_string_lossy().to_string(),
         exec_path: "/bin/bash".to_string(),
         exec_args: vec!["bash".to_string(), "-c".to_string(), command.to_string()],
@@ -88,19 +59,20 @@ pub fn run_command_captured(
         capture_output: true,
     };
 
-    crate::sandbox::namespace::spawn_sandbox(exec)
+    crate::sandbox::linux::namespace::spawn_sandbox(exec)
 }
 
 /// Enter sandbox to run a command (blocking, no output capture).
+#[cfg(target_os = "linux")]
 pub fn run_command(name: &str, command: &str) -> Result<i32, IsolaError> {
-    let rootfs = paths::rootfs_dir(name);
+    let rootfs = crate::paths::rootfs_dir(name);
     if !rootfs.exists() {
         return Err(IsolaError::SandboxNotFound(name.to_string()));
     }
 
     let env_vars = build_env_vars(false);
 
-    let exec = SandboxExec {
+    let exec = crate::sandbox::linux::namespace::SandboxExec {
         rootfs: rootfs.to_string_lossy().to_string(),
         exec_path: "/bin/bash".to_string(),
         exec_args: vec!["bash".to_string(), "-c".to_string(), command.to_string()],
@@ -113,9 +85,10 @@ pub fn run_command(name: &str, command: &str) -> Result<i32, IsolaError> {
         capture_output: false,
     };
 
-    enter_sandbox(exec)
+    crate::sandbox::linux::namespace::enter_sandbox(exec)
 }
 
+#[cfg(target_os = "linux")]
 pub fn build_env_vars(as_sandbox_user: bool) -> Vec<String> {
     let mut env = if as_sandbox_user {
         vec![
@@ -151,8 +124,10 @@ pub fn build_env_vars(as_sandbox_user: bool) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn env_vars_sandbox_user() {
         let vars = build_env_vars(true);
@@ -166,6 +141,7 @@ mod tests {
         assert!(vars.iter().any(|v| v == "XDG_RUNTIME_DIR=/run/user/1000"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn env_vars_root_user() {
         let vars = build_env_vars(false);
@@ -178,6 +154,7 @@ mod tests {
         assert!(vars.iter().any(|v| v == "XDG_RUNTIME_DIR=/run/user/0"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn env_vars_always_has_lang() {
         for as_sandbox in [true, false] {

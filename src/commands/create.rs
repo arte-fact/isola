@@ -5,8 +5,8 @@ use chrono::Utc;
 use crate::error::IsolaError;
 use crate::paths;
 use crate::plugin::{PluginLayer, PluginRegistry};
+use crate::sandbox::backend;
 use crate::sandbox::config::{SandboxConfig, SandboxShell};
-use crate::sandbox::rootfs;
 
 /// Create a sandbox with all project-layer plugins plus auto-detected user-layer plugins (CLI shorthand).
 pub fn run(name: &str, workspace: Option<PathBuf>, no_cache: bool) -> Result<(), IsolaError> {
@@ -21,14 +21,13 @@ pub fn run(name: &str, workspace: Option<PathBuf>, no_cache: bool) -> Result<(),
 
     // Auto-add user-layer plugins whose host path is detected (e.g. claude-config, ssh-keys)
     for p in registry.plugins_for_layer(PluginLayer::User) {
-        if let Some(ref ad) = p.manifest.auto_detect {
-            if home
+        if let Some(ref ad) = p.manifest.auto_detect
+            && home
                 .as_ref()
                 .map(|h| h.join(&ad.host_path).exists())
                 .unwrap_or(false)
-            {
-                envs.push(p.manifest.name.clone());
-            }
+        {
+            envs.push(p.manifest.name.clone());
         }
     }
 
@@ -50,22 +49,103 @@ pub fn run_with_envs(
     workspace: Option<PathBuf>,
     environments: &[String],
     share_display: bool,
-    no_cache: bool,
+    #[cfg_attr(target_os = "macos", allow(unused_variables))] no_cache: bool,
     shell: &SandboxShell,
     registry: &PluginRegistry,
 ) -> Result<(), IsolaError> {
-    use crate::progress::{self, CreationProgress};
-
-    let progress = CreationProgress::new(name);
-
     validate_name(name)?;
-    preflight_checks()?;
-    progress.finish_step("Preflight checks passed");
+
+    let b = backend::create_backend();
+    b.preflight_checks()?;
 
     let sandbox_dir = paths::sandbox_dir(name);
     if sandbox_dir.exists() {
         return Err(IsolaError::SandboxExists(name.to_string()));
     }
+
+    #[cfg(target_os = "linux")]
+    {
+        run_linux(
+            name,
+            workspace,
+            environments,
+            share_display,
+            no_cache,
+            shell,
+            registry,
+        )
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        run_macos(
+            name,
+            workspace,
+            environments,
+            share_display,
+            shell,
+            registry,
+        )
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn run_macos(
+    name: &str,
+    workspace: Option<PathBuf>,
+    environments: &[String],
+    share_display: bool,
+    shell: &SandboxShell,
+    _registry: &PluginRegistry,
+) -> Result<(), IsolaError> {
+    let b = backend::create_backend();
+
+    let workspace = workspace
+        .or_else(|| std::env::current_dir().ok())
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
+
+    b.create_environment(name, workspace.as_deref())?;
+    b.write_sandbox_files(name, environments)?;
+
+    let config = SandboxConfig {
+        name: name.to_string(),
+        created_at: Utc::now(),
+        rootfs_url: b.rootfs_url().to_string(),
+        workspace,
+        environments: environments.to_vec(),
+        share_display,
+        shell: shell.clone(),
+    };
+    config.save()?;
+
+    eprintln!("Sandbox '{}' created successfully", name);
+
+    let script = b.build_provision_script(environments);
+    eprintln!("Provisioning: {}...", environments.join(", "));
+    let exit_code = b.run_command(name, &script)?;
+    if exit_code != 0 {
+        return Err(IsolaError::ProvisionFailed(exit_code));
+    }
+
+    eprintln!("Sandbox '{}' is ready!", name);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn run_linux(
+    name: &str,
+    workspace: Option<PathBuf>,
+    environments: &[String],
+    share_display: bool,
+    no_cache: bool,
+    shell: &SandboxShell,
+    registry: &PluginRegistry,
+) -> Result<(), IsolaError> {
+    use crate::progress::{self, CreationProgress};
+    use crate::sandbox::rootfs;
+
+    let progress = CreationProgress::new(name);
+    progress.finish_step("Preflight checks passed");
 
     let rootfs_path = paths::rootfs_dir(name);
     std::fs::create_dir_all(&rootfs_path)?;
@@ -118,13 +198,7 @@ pub fn run_with_envs(
             progress.start_step(&format!("Provisioning {layer_name}..."));
 
             // Save config early so run_command_captured can find the sandbox
-            save_config(
-                name,
-                &workspace,
-                environments,
-                share_display,
-                shell,
-            )?;
+            save_config(name, &workspace, environments, share_display, shell)?;
 
             let child = crate::commands::enter::run_command_captured(name, &script)?;
             let (exit_code, last_lines) =
@@ -171,13 +245,7 @@ pub fn run_with_envs(
     progress.finish_step("Configured rootfs");
 
     // Save config (may already exist from partial layer build, save again to ensure latest)
-    save_config(
-        name,
-        &workspace,
-        environments,
-        share_display,
-        shell,
-    )?;
+    save_config(name, &workspace, environments, share_display, shell)?;
 
     if used_layered_cache {
         // Layered path: fix ownership + set up PATH
@@ -244,6 +312,7 @@ pub fn run_with_envs(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn save_config(
     name: &str,
     workspace: &Option<PathBuf>,
@@ -251,6 +320,8 @@ fn save_config(
     share_display: bool,
     shell: &SandboxShell,
 ) -> Result<(), IsolaError> {
+    use crate::sandbox::rootfs;
+
     let config = SandboxConfig {
         name: name.to_string(),
         created_at: Utc::now(),
@@ -264,27 +335,6 @@ fn save_config(
         shell: shell.clone(),
     };
     config.save()
-}
-
-pub fn preflight_checks() -> Result<(), IsolaError> {
-    if !crate::sandbox::userns::has_uidmap_tools() {
-        eprintln!(
-            "Note: newuidmap/newgidmap not found (install with: sudo apt install uidmap).\n\
-             The sandbox will use single-UID mapping (no root/user separation inside)."
-        );
-    }
-
-    if crate::commands::setup_host::apparmor_userns_restricted()
-        && !crate::commands::setup_host::has_apparmor_profile()
-    {
-        return Err(IsolaError::NamespaceError(
-            "AppArmor restricts unprivileged user namespaces on this system.\n\
-             Run `isola setup-host` to install the required AppArmor profile."
-                .to_string(),
-        ));
-    }
-
-    Ok(())
 }
 
 pub fn validate_name(name: &str) -> Result<(), IsolaError> {

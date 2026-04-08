@@ -6,6 +6,7 @@ use inquire::{Confirm, MultiSelect, Select, Text};
 use crate::error::IsolaError;
 use crate::paths;
 use crate::plugin::{PluginLayer, PluginRegistry};
+use crate::sandbox::backend;
 use crate::sandbox::config::{LocalConfig, SandboxShell};
 
 #[derive(Clone)]
@@ -22,7 +23,8 @@ impl fmt::Display for PluginChoice {
 
 /// Interactive setup wizard
 pub fn run() -> Result<(), IsolaError> {
-    crate::commands::create::preflight_checks()?;
+    let b = backend::create_backend();
+    b.preflight_checks()?;
 
     let registry = PluginRegistry::load()?;
 
@@ -129,7 +131,9 @@ pub fn run() -> Result<(), IsolaError> {
     let selected_user = if !user_plugins.is_empty() {
         MultiSelect::new("User setup — import from host:", user_plugins)
             .with_default(&user_defaults)
-            .with_help_message("Space to toggle, Enter to confirm — pre-selected = detected on host")
+            .with_help_message(
+                "Space to toggle, Enter to confirm — pre-selected = detected on host",
+            )
             .prompt()
             .map_err(|e| IsolaError::ConfigError(e.to_string()))?
     } else {

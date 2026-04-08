@@ -15,13 +15,12 @@ pub enum IsolaError {
     DownloadFailed(#[from] reqwest::Error),
 
     #[error("Rootfs extraction failed: {0}")]
+    #[cfg(target_os = "linux")]
     ExtractionFailed(String),
 
     #[error("Namespace setup failed: {0}")]
+    #[cfg(target_os = "linux")]
     NamespaceError(String),
-
-    #[error("Mount operation failed: {0}")]
-    MountError(nix::Error),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -58,12 +57,14 @@ mod tests {
         assert_eq!(e.to_string(), "Invalid sandbox name 'a/b': contains slash");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn extraction_failed_display() {
         let e = IsolaError::ExtractionFailed("corrupt tarball".into());
         assert_eq!(e.to_string(), "Rootfs extraction failed: corrupt tarball");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn namespace_error_display() {
         let e = IsolaError::NamespaceError("clone() failed".into());
@@ -89,10 +90,11 @@ mod tests {
         assert!(matches!(e, IsolaError::Io(_)));
         assert!(e.to_string().contains("file not found"));
     }
+}
 
-    #[test]
-    fn mount_error_display() {
-        let e = IsolaError::MountError(nix::Error::EACCES);
-        assert!(e.to_string().contains("Mount operation failed"));
+#[cfg(target_os = "linux")]
+impl From<nix::Error> for IsolaError {
+    fn from(e: nix::Error) -> Self {
+        IsolaError::NamespaceError(e.to_string())
     }
 }

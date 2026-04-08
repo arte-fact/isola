@@ -1,13 +1,20 @@
+#[cfg(target_os = "linux")]
 use std::io::Read as _;
+#[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "linux")]
 use crate::error::IsolaError;
+#[cfg(target_os = "linux")]
 use crate::paths;
 use crate::plugin::PluginRegistry;
 use crate::sandbox::config::SandboxShell;
 
+#[cfg(target_os = "linux")]
 const ROOTFS_URL: &str = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-amd64.tar.gz";
+#[cfg(target_os = "linux")]
 const ROOTFS_FILENAME: &str = "ubuntu-base-24.04.4-base-amd64.tar.gz";
+#[cfg(target_os = "linux")]
 const ROOTFS_SHA256SUMS_URL: &str =
     "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/SHA256SUMS";
 
@@ -50,6 +57,122 @@ ln -sf /usr/bin/fdfind /usr/local/bin/fd 2>/dev/null || true
 ln -sf /usr/bin/batcat /usr/local/bin/bat 2>/dev/null || true
 "#;
 
+// --- CLAUDE.md language-specific fragments ---
+
+const CLAUDE_MD_RUST: &str = r#"
+## Rust
+- Build: `cargo build`, Test: `cargo test`, Lint: `cargo clippy -- -D warnings`, Format: `cargo fmt`
+- Use `thiserror` for library error types and `anyhow` for application-level errors; propagate with `?`
+- Never use `.unwrap()` in library code; use `.expect("reason")` only for true invariants
+- Prefer borrowing (`&T`, `&mut T`) over taking ownership; use `Cow<'_, str>` for conditional ownership
+- Use `Vec::with_capacity()` when the size is known; prefer `&str` over `String` where possible
+- Organize imports: std → external crates → local modules; no wildcard imports except preludes
+- Derive common traits (`Debug`, `Clone`, `PartialEq`) on public types
+- Never commit `dbg!()` or `println!()` debug statements
+- Run `cargo fmt` and `cargo clippy` before committing
+"#;
+
+const CLAUDE_MD_NODEJS: &str = r#"
+## Node.js
+- Use ES modules (`import`/`export`), not CommonJS (`require`)
+- Destructure imports when possible: `import { foo } from 'bar'`
+- Run `npm test` to run the test suite; prefer running single test files over the full suite for speed
+- Use `npm run lint` or `npx eslint .` for linting; use `npx prettier --write .` for formatting
+- Enable TypeScript strict mode (`"strict": true` in tsconfig.json) when using TypeScript
+- Use `async`/`await` over raw Promises or callbacks
+- Pin dependency versions in `package.json`; run `npm ci` for reproducible installs
+- Never commit `node_modules/` or `.env` files
+"#;
+
+const CLAUDE_MD_PYTHON_UV: &str = r#"
+## Python
+- Use `uv` exclusively for package management — never use pip, pip-tools, poetry, or conda
+- Install: `uv add <package>`, Remove: `uv remove <package>`, Sync: `uv sync`, Lock: `uv lock`
+- Run scripts with `uv run <script>.py`; run tools with `uv run <tool>` (pytest, ruff, mypy)
+- Launch a REPL with `uv run python`
+- Use `uv run ruff check .` for linting and `uv run ruff format .` for formatting
+- Use type hints on all function signatures; validate with `uv run mypy .`
+- Use `uv run pytest` to run tests; prefer `uv run pytest path/to/test.py` for single files
+- Never use bare `python` or `pip` commands — always go through `uv run`
+"#;
+
+const CLAUDE_MD_GO: &str = r#"
+## Go
+- Build: `go build ./...`, Test: `go test ./...`, Lint: `golangci-lint run` (if installed)
+- Format with `gofmt` — code must always be gofmt-compliant
+- Follow "accept interfaces, return structs" for flexible API design
+- Use explicit error handling with return values; check every error, never discard with `_`
+- Use `context.Context` as the first parameter for functions that do I/O or may be cancelled
+- Prefer table-driven tests with `t.Run()` subtests
+- Use `go vet ./...` before committing to catch common mistakes
+- Standard project layout: `cmd/` for entrypoints, `internal/` for private packages, `pkg/` for public libraries
+"#;
+
+/// Build CLAUDE.md content based on selected environments
+pub fn build_claude_md(environments: &[String], isolation_desc: &str) -> String {
+    let mut md = format!(
+        r#"# Sandbox Environment
+
+You are running inside {isolation_desc}.
+
+## Environment
+- **OS**: Ubuntu 24.04 base"#
+    );
+    md.push_str(
+        r#"
+- **User**: sandbox (non-root)
+- **Network**: Full unrestricted internet access (shared with host)
+- **Workspace**: /workspace (bind-mounted from host project directory, read-write)
+
+## Running privileged commands
+Use sudo with the password "sandbox" for any privileged operation:
+```
+echo "sandbox" | sudo -S apt-get install -y <package>
+echo "sandbox" | sudo -S <command>
+```
+
+## Available Tools
+"#,
+    );
+
+    for env in environments {
+        match env.as_str() {
+            "rust" => md.push_str("- **Rust**: rustc + cargo (`/home/sandbox/.cargo/bin/`)\n"),
+            "nodejs" => md.push_str("- **Node.js**: v22 LTS (`/usr/bin/node`, `/usr/bin/npm`)\n"),
+            "python-uv" => md.push_str(
+                "- **Python**: python3 + uv (`/usr/bin/python3`, `/home/sandbox/.local/bin/uv`)\n",
+            ),
+            "go" => md.push_str("- **Go**: (`/usr/local/go/bin/go`)\n"),
+            _ => {}
+        }
+    }
+
+    md.push_str("- **System**: use sudo to install any additional packages with apt-get\n");
+
+    for env in environments {
+        match env.as_str() {
+            "rust" => md.push_str(CLAUDE_MD_RUST),
+            "nodejs" => md.push_str(CLAUDE_MD_NODEJS),
+            "python-uv" => md.push_str(CLAUDE_MD_PYTHON_UV),
+            "go" => md.push_str(CLAUDE_MD_GO),
+            _ => {}
+        }
+    }
+
+    md.push_str(
+        r#"
+## Important
+- Changes to `/workspace` are reflected on the host filesystem immediately.
+- Changes outside `/workspace` persist across sandbox sessions (persistent sandbox).
+- You cannot see or affect host processes. Your PID namespace is isolated.
+- You are free to run any command without restriction.
+"#,
+    );
+
+    md
+}
+
+#[cfg(target_os = "linux")]
 /// Read the host's git user.name and user.email, returning a .gitconfig string if either is set.
 fn build_host_gitconfig() -> Option<String> {
     let name = std::process::Command::new("git")
@@ -212,6 +335,7 @@ chmod 700 /run/user/0 /run/user/1000
 }
 
 /// Download and cache rootfs with progress UI.
+#[cfg(target_os = "linux")]
 pub fn ensure_rootfs_cached_with_progress(
     progress: &crate::progress::CreationProgress,
 ) -> Result<PathBuf, IsolaError> {
@@ -259,6 +383,7 @@ pub fn ensure_rootfs_cached_with_progress(
 }
 
 /// Verify the rootfs tarball against Ubuntu's published SHA256SUMS.
+#[cfg(target_os = "linux")]
 fn verify_rootfs_checksum(path: &Path) -> Result<(), IsolaError> {
     use std::io::Read;
 
@@ -318,6 +443,7 @@ fn verify_rootfs_checksum(path: &Path) -> Result<(), IsolaError> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 /// Minimal SHA256 implementation (no external crate needed).
 struct Sha256 {
     state: [u32; 8],
@@ -325,6 +451,7 @@ struct Sha256 {
     total_len: u64,
 }
 
+#[cfg(target_os = "linux")]
 impl Sha256 {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
@@ -425,6 +552,7 @@ impl Sha256 {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), IsolaError> {
     std::fs::create_dir_all(target)?;
 
@@ -442,6 +570,7 @@ pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), IsolaError> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), IsolaError> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -457,6 +586,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), IsolaError> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 pub fn post_setup_rootfs(
     rootfs: &Path,
     name: &str,
@@ -530,17 +660,20 @@ pub fn post_setup_rootfs(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 pub fn rootfs_url() -> &'static str {
     ROOTFS_URL
 }
 
 /// Check if a cached provisioned rootfs exists for the given environments.
+#[cfg(target_os = "linux")]
 pub fn has_cached_provision(environments: &[String], shell: &str) -> Option<PathBuf> {
     let path = paths::provision_cache_path(environments, shell);
     if path.exists() { Some(path) } else { None }
 }
 
 /// Create a gzipped tarball of the provisioned rootfs for future reuse.
+#[cfg(target_os = "linux")]
 pub fn cache_provisioned_rootfs(
     name: &str,
     environments: &[String],
@@ -568,6 +701,7 @@ pub fn cache_provisioned_rootfs(
 /// Minimal script to fix file ownership after extracting a cached provisioned rootfs.
 /// After extraction with set_preserve_ownerships(false), all files are root-owned inside
 /// the namespace. This restores sandbox user ownership on /home/sandbox/.
+#[cfg(target_os = "linux")]
 pub fn build_fixup_script() -> String {
     "#!/bin/bash\nset -e\nchown -R 1000:1000 /home/sandbox/\n".to_string()
 }
@@ -576,12 +710,14 @@ pub fn build_fixup_script() -> String {
 
 /// Compute a short hash of a provisioning script fragment for cache keying.
 /// Returns the first 12 hex characters of SHA256(script_text).
+#[cfg(target_os = "linux")]
 pub fn layer_version_hash(script_text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(script_text.as_bytes());
     hasher.finish_hex()[..12].to_string()
 }
 
+#[cfg(target_os = "linux")]
 /// Script fragment for capturing layer diff via marker file.
 const LAYER_CAPTURE_HEADER: &str = r#"#!/bin/bash
 set -eo pipefail
@@ -591,6 +727,7 @@ touch /tmp/.layer_marker
 sleep 1
 "#;
 
+#[cfg(target_os = "linux")]
 const LAYER_CAPTURE_FOOTER: &str = r#"
 echo ">>> Capturing layer..."
 find / -xdev -newer /tmp/.layer_marker \
@@ -602,6 +739,7 @@ echo "=== Layer complete ==="
 "#;
 
 /// Build a provisioning script for the base layer (packages + shell + user creation).
+#[cfg(target_os = "linux")]
 pub fn build_base_layer_script(shell: &SandboxShell) -> String {
     let mut script = String::from("#!/bin/bash\n");
     script.push_str("export PATH=\"/root/.cargo/bin:/root/.local/bin:/usr/local/go/bin:$PATH\"\n");
@@ -651,6 +789,7 @@ ISOLA_BASH_EOF
 /// Build a provisioning script for a single environment layer using its plugin.
 /// The script uses a marker file to capture only the files changed by this layer.
 /// Returns None if the plugin is not found or has no install script (config-only plugin).
+#[cfg(target_os = "linux")]
 pub fn build_env_layer_script(env_name: &str, registry: &PluginRegistry) -> Option<String> {
     let plugin = registry.get(env_name)?;
     let install_script = plugin.install_script.as_ref()?;
@@ -684,6 +823,7 @@ pub fn build_env_layer_script(env_name: &str, registry: &PluginRegistry) -> Opti
     Some(script)
 }
 
+#[cfg(target_os = "linux")]
 /// Status of the layered cache for a given configuration.
 pub struct LayerCacheStatus {
     /// Layers that have cached tarballs, in extraction order.
@@ -692,6 +832,7 @@ pub struct LayerCacheStatus {
     pub uncached: Vec<String>,
 }
 
+#[cfg(target_os = "linux")]
 impl LayerCacheStatus {
     pub fn all_cached(&self) -> bool {
         self.uncached.is_empty()
@@ -699,6 +840,7 @@ impl LayerCacheStatus {
 }
 
 /// Compute the script text used for a layer's version hash.
+#[cfg(target_os = "linux")]
 fn layer_script_text(
     layer_name: &str,
     shell: &SandboxShell,
@@ -711,6 +853,7 @@ fn layer_script_text(
 }
 
 /// Check which layers are cached and which need building.
+#[cfg(target_os = "linux")]
 pub fn check_layer_cache(
     environments: &[String],
     shell: &SandboxShell,
@@ -741,6 +884,7 @@ pub fn check_layer_cache(
 }
 
 /// Build a fixup script that sets up combined PATH for all environments and fixes ownership.
+#[cfg(target_os = "linux")]
 pub fn build_layered_fixup_script(environments: &[String], registry: &PluginRegistry) -> String {
     let mut script = String::from("#!/bin/bash\nset -e\n");
 
@@ -784,6 +928,7 @@ pub fn build_layered_fixup_script(environments: &[String], registry: &PluginRegi
 }
 
 /// Cache the base layer by tarballing the entire rootfs.
+#[cfg(target_os = "linux")]
 pub fn cache_base_layer(name: &str, shell: &SandboxShell) -> Result<PathBuf, IsolaError> {
     let rootfs_path = paths::rootfs_dir(name);
     let script = build_base_layer_script(shell);
@@ -809,6 +954,7 @@ pub fn cache_base_layer(name: &str, shell: &SandboxShell) -> Result<PathBuf, Iso
 }
 
 /// Move the layer tarball created inside the sandbox to the cache directory.
+#[cfg(target_os = "linux")]
 pub fn cache_env_layer(
     name: &str,
     layer_name: &str,
@@ -926,8 +1072,9 @@ mod tests {
         assert!(script.contains("Installing neovim"));
     }
 
-    // --- Layered cache tests ---
+    // --- Layered cache tests (Linux only) ---
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn layer_version_hash_deterministic() {
         let h1 = layer_version_hash("some script");
@@ -936,6 +1083,7 @@ mod tests {
         assert_eq!(h1.len(), 12);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn layer_version_hash_changes_with_content() {
         let h1 = layer_version_hash("script v1");
@@ -943,6 +1091,7 @@ mod tests {
         assert_ne!(h1, h2);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn base_layer_script_contains_essentials() {
         let script = build_base_layer_script(&SandboxShell::Bash);
@@ -952,6 +1101,7 @@ mod tests {
         assert!(script.contains("/bin/bash"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn base_layer_script_shell_for_useradd() {
         let fish = build_base_layer_script(&SandboxShell::Fish);
@@ -964,6 +1114,7 @@ mod tests {
         assert!(!zsh.contains("Installing zsh"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn env_layer_script_rust() {
         let r = registry();
@@ -974,6 +1125,7 @@ mod tests {
         assert!(script.contains(".layer_cache.tar.gz"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn env_layer_script_nodejs() {
         let r = registry();
@@ -982,12 +1134,14 @@ mod tests {
         assert!(script.contains(".layer_marker"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn env_layer_script_unknown_returns_none() {
         let r = registry();
         assert!(build_env_layer_script("unknown", &r).is_none());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn env_layer_script_neovim() {
         let r = registry();
@@ -996,6 +1150,7 @@ mod tests {
         assert!(script.contains(".layer_marker"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn layered_fixup_script_empty_envs() {
         let r = registry();
@@ -1004,6 +1159,7 @@ mod tests {
         assert!(!script.contains("/home/sandbox/.cargo/bin"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn layered_fixup_script_with_envs() {
         let r = registry();
@@ -1014,6 +1170,7 @@ mod tests {
         assert!(!script.contains("/home/sandbox/.local/bin"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn check_layer_cache_reports_all_layers() {
         let r = registry();
@@ -1023,6 +1180,7 @@ mod tests {
         assert_eq!(total, 2);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn check_layer_cache_sorts_envs() {
         let r = registry();
@@ -1039,6 +1197,7 @@ mod tests {
     }
 
     // SHA256 test vectors from NIST / RFC 6234
+    #[cfg(target_os = "linux")]
     #[test]
     fn sha256_empty_string() {
         let mut h = Sha256::new();
@@ -1049,6 +1208,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn sha256_abc() {
         let mut h = Sha256::new();
@@ -1059,6 +1219,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn sha256_long_message() {
         let mut h = Sha256::new();
@@ -1069,6 +1230,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn sha256_incremental_update() {
         let mut h = Sha256::new();

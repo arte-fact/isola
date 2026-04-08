@@ -32,7 +32,13 @@
       "Bash(find ~/.cargo/registry/src -path */console-0.15.*/src/term.rs)",
       "WebFetch(domain:www.redhat.com)",
       "WebFetch(domain:www.tutorialworks.com)",
-      "WebFetch(domain:docs.rs)"
+      "WebFetch(domain:docs.rs)",
+      "Bash(cargo check:*)"
     ]
+  },
+  "sandbox": {
+    "enabled": false,
+    "autoAllowBashIfSandboxed": false,
+    "allowUnsandboxedCommands": false
   }
 }
