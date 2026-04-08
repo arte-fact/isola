@@ -14,6 +14,7 @@ pub fn sandbox_dir(name: &str) -> PathBuf {
     sandboxes_dir().join(name)
 }
 
+#[cfg(target_os = "linux")]
 pub fn rootfs_dir(name: &str) -> PathBuf {
     sandbox_dir(name).join("rootfs")
 }
@@ -22,6 +23,7 @@ pub fn config_path(name: &str) -> PathBuf {
     sandbox_dir(name).join("config.json")
 }
 
+#[cfg(target_os = "linux")]
 pub fn cache_dir() -> PathBuf {
     isola_home().join("cache")
 }
@@ -56,6 +58,7 @@ mod tests {
         assert!(dir.ends_with("sandboxes/test-sb"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn rootfs_dir_uses_name() {
         let dir = rootfs_dir("test-sb");
@@ -68,6 +71,7 @@ mod tests {
         assert!(path.ends_with("sandboxes/test-sb/config.json"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn cache_dir_is_under_isola_home() {
         assert_eq!(cache_dir(), isola_home().join("cache"));

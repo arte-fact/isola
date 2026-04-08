@@ -15,13 +15,12 @@ pub enum IsolaError {
     DownloadFailed(#[from] reqwest::Error),
 
     #[error("Rootfs extraction failed: {0}")]
+    #[cfg(target_os = "linux")]
     ExtractionFailed(String),
 
     #[error("Namespace setup failed: {0}")]
+    #[cfg(target_os = "linux")]
     NamespaceError(String),
-
-    #[error("Mount operation failed: {0}")]
-    MountError(nix::Error),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
@@ -33,8 +32,9 @@ pub enum IsolaError {
     ProvisionFailed(i32),
 }
 
+#[cfg(target_os = "linux")]
 impl From<nix::Error> for IsolaError {
     fn from(e: nix::Error) -> Self {
-        IsolaError::MountError(e)
+        IsolaError::NamespaceError(e.to_string())
     }
 }

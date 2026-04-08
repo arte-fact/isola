@@ -13,6 +13,16 @@ pub struct SandboxConfig {
     pub workspace: Option<PathBuf>,
     #[serde(default)]
     pub environments: Vec<String>,
+    #[serde(default = "default_backend")]
+    pub backend: String,
+}
+
+fn default_backend() -> String {
+    if cfg!(target_os = "linux") {
+        "linux-namespace".to_string()
+    } else {
+        "lima-vm".to_string()
+    }
 }
 
 impl SandboxConfig {
@@ -43,6 +53,7 @@ mod tests {
             rootfs_url: "https://example.com/rootfs.tar.gz".to_string(),
             workspace: Some(std::path::PathBuf::from("/home/user/project")),
             environments: vec!["rust".to_string(), "nodejs".to_string()],
+            backend: "test".to_string(),
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();

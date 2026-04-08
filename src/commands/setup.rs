@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use inquire::{Confirm, MultiSelect, Text};
 
 use crate::error::IsolaError;
+use crate::sandbox::backend;
 
 #[derive(Clone)]
 pub struct Environment {
@@ -39,7 +40,8 @@ const AVAILABLE_ENVIRONMENTS: &[Environment] = &[
 
 /// Interactive setup wizard
 pub fn run() -> Result<(), IsolaError> {
-    crate::commands::create::preflight_checks()?;
+    let b = backend::create_backend();
+    b.preflight_checks()?;
 
     let dir_name = std::env::current_dir()
         .ok()
@@ -92,7 +94,7 @@ pub fn run() -> Result<(), IsolaError> {
     // 4. Create sandbox with selected environments
     crate::commands::create::run_with_envs(&name, Some(workspace_path), &env_ids)?;
 
-    // 6. Enter the sandbox
+    // 5. Enter the sandbox
     eprintln!("Launching Claude Code...");
     let code = crate::commands::enter::run(&name, false, None)?;
     std::process::exit(code);

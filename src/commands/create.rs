@@ -4,8 +4,8 @@ use chrono::Utc;
 
 use crate::error::IsolaError;
 use crate::paths;
+use crate::sandbox::backend;
 use crate::sandbox::config::SandboxConfig;
-use crate::sandbox::rootfs;
 
 /// All available environment IDs
 pub const ALL_ENVIRONMENTS: &[&str] = &["rust", "nodejs", "python-uv", "go"];
@@ -23,63 +23,42 @@ pub fn run_with_envs(
     environments: &[String],
 ) -> Result<(), IsolaError> {
     validate_name(name)?;
-    preflight_checks()?;
+
+    let backend = backend::create_backend();
+    backend.preflight_checks()?;
 
     let sandbox_dir = paths::sandbox_dir(name);
     if sandbox_dir.exists() {
         return Err(IsolaError::SandboxExists(name.to_string()));
     }
 
-    let tarball = rootfs::ensure_rootfs_cached()?;
+    let workspace = workspace
+        .or_else(|| std::env::current_dir().ok())
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p));
 
-    let rootfs_path = paths::rootfs_dir(name);
-    std::fs::create_dir_all(&rootfs_path)?;
-    rootfs::extract_rootfs(&tarball, &rootfs_path)?;
-
-    rootfs::post_setup_rootfs(&rootfs_path, name, environments)?;
+    backend.create_environment(name, workspace.as_deref())?;
+    backend.write_sandbox_files(name, environments)?;
 
     let config = SandboxConfig {
         name: name.to_string(),
         created_at: Utc::now(),
-        rootfs_url: rootfs::rootfs_url().to_string(),
-        workspace: workspace
-            .or_else(|| std::env::current_dir().ok())
-            .map(|p| std::fs::canonicalize(&p).unwrap_or(p)),
+        rootfs_url: backend.rootfs_url().to_string(),
+        workspace,
         environments: environments.to_vec(),
+        backend: backend.backend_name().to_string(),
     };
     config.save()?;
 
     eprintln!("Sandbox '{}' created successfully", name);
 
-    let script = rootfs::build_provision_script(environments);
+    let script = backend.build_provision_script(environments);
     eprintln!("Provisioning: {}...", environments.join(", "));
-    let exit_code = crate::commands::enter::run_command(name, &script)?;
+    let exit_code = backend.run_command(name, &script)?;
     if exit_code != 0 {
         return Err(IsolaError::ProvisionFailed(exit_code));
     }
 
     eprintln!("Sandbox '{}' is ready!", name);
-    Ok(())
-}
-
-pub fn preflight_checks() -> Result<(), IsolaError> {
-    if !crate::sandbox::userns::has_uidmap_tools() {
-        eprintln!(
-            "Note: newuidmap/newgidmap not found (install with: sudo apt install uidmap).\n\
-             The sandbox will use single-UID mapping (no root/user separation inside)."
-        );
-    }
-
-    if crate::commands::setup_host::apparmor_userns_restricted()
-        && !crate::commands::setup_host::has_apparmor_profile()
-    {
-        return Err(IsolaError::NamespaceError(
-            "AppArmor restricts unprivileged user namespaces on this system.\n\
-             Run `isola setup-host` to install the required AppArmor profile."
-                .to_string(),
-        ));
-    }
-
     Ok(())
 }
 

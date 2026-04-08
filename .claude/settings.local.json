@@ -19,5 +19,10 @@
       "Bash(sudo chown:*)",
       "Bash(sudo rm:*)"
     ]
+  },
+  "sandbox": {
+    "enabled": false,
+    "autoAllowBashIfSandboxed": false,
+    "allowUnsandboxedCommands": false
   }
 }

@@ -23,10 +23,10 @@ pub fn run() -> Result<(), IsolaError> {
     entries.sort_by_key(|e| e.file_name());
 
     println!(
-        "{:<20} {:<24} {:<20} {:<10} {}",
-        "NAME", "CREATED", "ENVIRONMENTS", "SIZE", "WORKSPACE"
+        "{:<20} {:<16} {:<24} {:<20} {:<10} {}",
+        "NAME", "BACKEND", "CREATED", "ENVIRONMENTS", "SIZE", "WORKSPACE"
     );
-    println!("{}", "-".repeat(100));
+    println!("{}", "-".repeat(116));
 
     for entry in entries {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -43,8 +43,9 @@ pub fn run() -> Result<(), IsolaError> {
                     config.environments.join(",")
                 };
                 println!(
-                    "{:<20} {:<24} {:<20} {:<10} {}",
+                    "{:<20} {:<16} {:<24} {:<20} {:<10} {}",
                     config.name,
+                    config.backend,
                     config.created_at.format("%Y-%m-%d %H:%M:%S UTC"),
                     envs,
                     size,
@@ -52,7 +53,10 @@ pub fn run() -> Result<(), IsolaError> {
                 );
             }
             Err(_) => {
-                println!("{:<20} {:<24} {:<20} {:<10} {}", name, "?", "?", size, "?");
+                println!(
+                    "{:<20} {:<16} {:<24} {:<20} {:<10} {}",
+                    name, "?", "?", "?", size, "?"
+                );
             }
         }
     }

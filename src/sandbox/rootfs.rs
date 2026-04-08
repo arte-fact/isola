@@ -1,13 +1,23 @@
+#[cfg(target_os = "linux")]
 use std::io::Read as _;
-use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 
+#[cfg(target_os = "linux")]
 use indicatif::{ProgressBar, ProgressStyle};
 
+#[cfg(target_os = "linux")]
 use crate::error::IsolaError;
+#[cfg(target_os = "linux")]
 use crate::paths;
 
+#[cfg(target_os = "linux")]
 const ROOTFS_URL: &str = "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-amd64.tar.gz";
+#[cfg(target_os = "linux")]
 const ROOTFS_FILENAME: &str = "ubuntu-base-24.04.4-base-amd64.tar.gz";
+#[cfg(target_os = "linux")]
 const ROOTFS_SHA256SUMS_URL: &str =
     "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/SHA256SUMS";
 
@@ -49,7 +59,12 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 const PROVISION_GO: &str = r#"
 echo ">>> Installing Go..."
 GO_VERSION=$(curl -sL "https://go.dev/dl/?mode=json" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['version'])" 2>/dev/null || echo "go1.23.6")
-curl -sL "https://go.dev/dl/${GO_VERSION}.linux-amd64.tar.gz" | tar -C /usr/local -xzf -
+GOARCH=$(uname -m)
+case $GOARCH in
+  x86_64) GOARCH=amd64 ;;
+  aarch64|arm64) GOARCH=arm64 ;;
+esac
+curl -sL "https://go.dev/dl/${GO_VERSION}.linux-${GOARCH}.tar.gz" | tar -C /usr/local -xzf -
 echo 'export PATH="/usr/local/go/bin:$PATH"' >> /etc/profile.d/go.sh
 "#;
 
@@ -105,6 +120,7 @@ const CLAUDE_MD_GO: &str = r#"
 "#;
 
 /// Read the host's git user.name and user.email, returning a .gitconfig string if either is set.
+#[cfg(target_os = "linux")]
 fn build_host_gitconfig() -> Option<String> {
     let name = std::process::Command::new("git")
         .args(["config", "--global", "user.name"])
@@ -215,14 +231,17 @@ chmod 440 /etc/sudoers.d/sandbox
 }
 
 /// Build CLAUDE.md content based on selected environments
-pub fn build_claude_md(environments: &[String]) -> String {
-    let mut md = String::from(
+pub fn build_claude_md(environments: &[String], isolation_desc: &str) -> String {
+    let mut md = format!(
         r#"# Sandbox Environment
 
-You are running inside an isolated Linux sandbox (user namespace + PID namespace + mount namespace).
+You are running inside {isolation_desc}.
 
 ## Environment
-- **OS**: Ubuntu 24.04 base
+- **OS**: Ubuntu 24.04 base"#
+    );
+    md.push_str(
+        r#"
 - **User**: sandbox (non-root)
 - **Network**: Full unrestricted internet access (shared with host)
 - **Workspace**: /workspace (bind-mounted from host project directory, read-write)
@@ -276,6 +295,7 @@ echo "sandbox" | sudo -S <command>
     md
 }
 
+#[cfg(target_os = "linux")]
 pub fn ensure_rootfs_cached() -> Result<PathBuf, IsolaError> {
     let cache = paths::cache_dir();
     let cached_path = cache.join(ROOTFS_FILENAME);
@@ -334,6 +354,7 @@ pub fn ensure_rootfs_cached() -> Result<PathBuf, IsolaError> {
 }
 
 /// Verify the rootfs tarball against Ubuntu's published SHA256SUMS.
+#[cfg(target_os = "linux")]
 fn verify_rootfs_checksum(path: &Path) -> Result<(), IsolaError> {
     use std::io::Read;
 
@@ -389,12 +410,14 @@ fn verify_rootfs_checksum(path: &Path) -> Result<(), IsolaError> {
 }
 
 /// Minimal SHA256 implementation (no external crate needed).
+#[cfg(target_os = "linux")]
 struct Sha256 {
     state: [u32; 8],
     buffer: Vec<u8>,
     total_len: u64,
 }
 
+#[cfg(target_os = "linux")]
 impl Sha256 {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
@@ -494,6 +517,7 @@ impl Sha256 {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), IsolaError> {
     eprintln!("Extracting rootfs to {}...", target.display());
     std::fs::create_dir_all(target)?;
@@ -513,10 +537,12 @@ pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), IsolaError> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 pub fn post_setup_rootfs(
     rootfs: &Path,
     name: &str,
     environments: &[String],
+    isolation_desc: &str,
 ) -> Result<(), IsolaError> {
     let host_resolv = std::fs::read_to_string("/etc/resolv.conf")?;
     std::fs::write(rootfs.join("etc/resolv.conf"), &host_resolv)?;
@@ -578,7 +604,7 @@ pub fn post_setup_rootfs(
     std::fs::write(rootfs.join("root/.claude/settings.json"), &settings_json)?;
 
     // CLAUDE.md (dynamic based on environments)
-    let claude_md = build_claude_md(environments);
+    let claude_md = build_claude_md(environments, isolation_desc);
     std::fs::write(rootfs.join("home/sandbox/.claude/CLAUDE.md"), &claude_md)?;
     std::fs::write(rootfs.join("workspace/CLAUDE.md"), &claude_md)?;
 
@@ -591,6 +617,7 @@ pub fn post_setup_rootfs(
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 pub fn rootfs_url() -> &'static str {
     ROOTFS_URL
 }
@@ -655,7 +682,7 @@ mod tests {
 
     #[test]
     fn claude_md_base_content() {
-        let md = build_claude_md(&[]);
+        let md = build_claude_md(&[], "test isolation");
         assert!(md.contains("Sandbox Environment"));
         assert!(md.contains("Ubuntu 24.04"));
         assert!(md.contains("sudo"));
@@ -665,7 +692,7 @@ mod tests {
     #[test]
     fn claude_md_includes_selected_envs() {
         let envs = vec!["rust".to_string(), "go".to_string()];
-        let md = build_claude_md(&envs);
+        let md = build_claude_md(&envs, "test isolation");
         assert!(md.contains("Rust"));
         assert!(md.contains("Go"));
         assert!(!md.contains("Node.js"));
@@ -680,7 +707,7 @@ mod tests {
             "python-uv".to_string(),
             "go".to_string(),
         ];
-        let md = build_claude_md(&envs);
+        let md = build_claude_md(&envs, "test isolation");
         assert!(md.contains("Rust"));
         assert!(md.contains("Node.js"));
         assert!(md.contains("Python"));
@@ -690,7 +717,7 @@ mod tests {
     #[test]
     fn claude_md_rust_best_practices() {
         let envs = vec!["rust".to_string()];
-        let md = build_claude_md(&envs);
+        let md = build_claude_md(&envs, "test isolation");
         assert!(md.contains("cargo clippy"));
         assert!(md.contains("cargo fmt"));
         assert!(md.contains("thiserror"));
@@ -701,7 +728,7 @@ mod tests {
     #[test]
     fn claude_md_nodejs_best_practices() {
         let envs = vec!["nodejs".to_string()];
-        let md = build_claude_md(&envs);
+        let md = build_claude_md(&envs, "test isolation");
         assert!(md.contains("ES modules"));
         assert!(md.contains("npm test"));
         assert!(!md.contains("cargo clippy"));
@@ -710,7 +737,7 @@ mod tests {
     #[test]
     fn claude_md_python_best_practices() {
         let envs = vec!["python-uv".to_string()];
-        let md = build_claude_md(&envs);
+        let md = build_claude_md(&envs, "test isolation");
         assert!(md.contains("uv add"));
         assert!(md.contains("uv run"));
         assert!(md.contains("never use pip"));
@@ -720,7 +747,7 @@ mod tests {
     #[test]
     fn claude_md_go_best_practices() {
         let envs = vec!["go".to_string()];
-        let md = build_claude_md(&envs);
+        let md = build_claude_md(&envs, "test isolation");
         assert!(md.contains("gofmt"));
         assert!(md.contains("go test"));
         assert!(md.contains("context.Context"));
@@ -729,7 +756,7 @@ mod tests {
 
     #[test]
     fn claude_md_no_envs_no_best_practices() {
-        let md = build_claude_md(&[]);
+        let md = build_claude_md(&[], "test isolation");
         assert!(!md.contains("cargo clippy"));
         assert!(!md.contains("npm test"));
         assert!(!md.contains("uv run"));

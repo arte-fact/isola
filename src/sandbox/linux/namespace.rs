@@ -6,8 +6,8 @@ use std::path::Path;
 use nix::libc;
 
 use crate::error::IsolaError;
-use crate::sandbox::mounts;
-use crate::sandbox::userns;
+use super::mounts;
+use super::userns;
 
 fn to_cstring(s: &str, label: &str) -> Result<CString, IsolaError> {
     CString::new(s).map_err(|_| IsolaError::NamespaceError(format!("{label} contains a null byte")))
