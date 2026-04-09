@@ -20,8 +20,11 @@ pub struct SandboxExec {
     pub exec_args: Vec<String>,
     pub env_vars: Vec<String>,
     pub workspace_host: Option<String>,
-    /// Host ~/.ssh directory to bind-mount read-only into the sandbox.
-    pub ssh_dir: Option<String>,
+    /// Plugin-declared host directories to bind-mount at entry time.
+    /// Each entry is (from_relative_to_HOME, to_relative_to_sandbox_home, readonly).
+    pub host_mounts: Vec<(String, String, bool)>,
+    /// If true, share host display (X11/Wayland) with the sandbox.
+    pub share_display: bool,
     pub run_as_uid: Option<u32>,
     pub multi_uid: bool,
     /// If true, redirect child stdout+stderr to a pipe readable by the parent.
@@ -86,7 +89,8 @@ struct ChildArgs {
     exec_args: Vec<CString>,
     env_vars: Vec<CString>,
     workspace_host: Option<CString>,
-    ssh_dir: Option<CString>,
+    host_mounts: Vec<(String, String, bool)>,
+    share_display: bool,
     run_as_uid: Option<u32>,
 }
 
@@ -112,11 +116,8 @@ pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, IsolaError> {
             .as_ref()
             .map(|s| to_cstring(s, "workspace path"))
             .transpose()?,
-        ssh_dir: exec
-            .ssh_dir
-            .as_ref()
-            .map(|s| to_cstring(s, "ssh dir path"))
-            .transpose()?,
+        host_mounts: exec.host_mounts.clone(),
+        share_display: exec.share_display,
         run_as_uid: exec.run_as_uid,
     };
 
@@ -222,10 +223,8 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
             .as_ref()
             .and_then(|s| s.to_str().ok())
             .map(Path::new),
-        args.ssh_dir
-            .as_ref()
-            .and_then(|s| s.to_str().ok())
-            .map(Path::new),
+        &args.host_mounts,
+        args.share_display,
     )?;
 
     // pivot_root
@@ -252,8 +251,16 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
             .map_err(|e| IsolaError::NamespaceError(format!("setuid({uid}) failed: {e}")))?;
     }
 
-    // Start in /workspace if it exists
-    let _ = nix::unistd::chdir("/workspace");
+    // Start in the workspace directory (named after the host directory)
+    let workspace_dir = args
+        .workspace_host
+        .as_ref()
+        .and_then(|s| s.to_str().ok())
+        .and_then(|s| std::path::Path::new(s).file_name())
+        .and_then(|n| n.to_str())
+        .map(|n| format!("/{n}"))
+        .unwrap_or_else(|| "/".to_string());
+    let _ = nix::unistd::chdir(workspace_dir.as_str());
 
     // Redirect stdout+stderr to output pipe if requested
     if args.output_pipe_write >= 0 {
@@ -316,11 +323,8 @@ pub fn spawn_sandbox(exec: SandboxExec) -> Result<SandboxChild, IsolaError> {
             .as_ref()
             .map(|s| to_cstring(s, "workspace path"))
             .transpose()?,
-        ssh_dir: exec
-            .ssh_dir
-            .as_ref()
-            .map(|s| to_cstring(s, "ssh dir path"))
-            .transpose()?,
+        host_mounts: exec.host_mounts.clone(),
+        share_display: exec.share_display,
         run_as_uid: exec.run_as_uid,
     };
 

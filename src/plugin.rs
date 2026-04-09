@@ -6,6 +6,26 @@ use serde::Deserialize;
 use crate::error::IsolaError;
 use crate::paths;
 
+/// Plugin layer: determines where a plugin appears in the setup wizard.
+#[derive(Debug, Clone, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginLayer {
+    /// Shell plugins (fish, zsh) — auto-added based on shell selection, hidden from multi-selects.
+    Shell,
+    /// User-layer: personal config/access imported from the host. Auto-detected defaults.
+    User,
+    /// Project-layer: software installed in the sandbox. (default)
+    #[default]
+    Project,
+}
+
+/// Host-side detection hint for auto-selecting user-layer plugins in the wizard.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PluginAutoDetect {
+    /// Path relative to $HOME; plugin is pre-selected if this path exists on the host.
+    pub host_path: String,
+}
+
 /// Deserialized from plugin.yaml
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -16,11 +36,16 @@ pub struct PluginManifest {
     pub provision: PluginProvision,
     #[serde(default)]
     pub paths: PluginPaths,
+    #[serde(default)]
+    pub layer: PluginLayer,
+    pub auto_detect: Option<PluginAutoDetect>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct PluginProvision {
-    pub script: String,
+    /// Install script filename relative to the plugin directory.
+    /// None for config-only plugins that have no software to install.
+    pub script: Option<String>,
     #[serde(default)]
     pub verify: Option<String>,
 }
@@ -36,6 +61,10 @@ pub struct PluginPaths {
     /// to /home/sandbox/ inside the rootfs.
     #[serde(default)]
     pub host_copy: Vec<CopyEntry>,
+    /// Files or directories to bind-mount from host $HOME into the sandbox at
+    /// entry time. `from` is relative to $HOME, `to` is relative to /home/sandbox/.
+    #[serde(default)]
+    pub host_mount: Vec<MountEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -44,12 +73,21 @@ pub struct CopyEntry {
     pub to: String,
 }
 
-/// A fully resolved plugin with manifest and script content.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MountEntry {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub readonly: bool,
+}
+
+/// A fully resolved plugin with manifest and optional install script.
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Plugin {
     pub manifest: PluginManifest,
-    pub install_script: String,
+    /// Install script content. None for config-only plugins (layer: user with no software to install).
+    pub install_script: Option<String>,
     pub source: PluginSource,
 }
 
@@ -62,33 +100,77 @@ pub enum PluginSource {
 
 struct BundledPlugin {
     manifest_yaml: &'static str,
-    install_script: &'static str,
+    install_script: Option<&'static str>,
 }
 
 const BUNDLED_PLUGINS: &[BundledPlugin] = &[
+    // Project-layer: language toolchains
     BundledPlugin {
         manifest_yaml: include_str!("../plugins/rust/plugin.yaml"),
-        install_script: include_str!("../plugins/rust/install.sh"),
+        install_script: Some(include_str!("../plugins/rust/install.sh")),
     },
     BundledPlugin {
         manifest_yaml: include_str!("../plugins/nodejs/plugin.yaml"),
-        install_script: include_str!("../plugins/nodejs/install.sh"),
+        install_script: Some(include_str!("../plugins/nodejs/install.sh")),
     },
     BundledPlugin {
         manifest_yaml: include_str!("../plugins/python-uv/plugin.yaml"),
-        install_script: include_str!("../plugins/python-uv/install.sh"),
+        install_script: Some(include_str!("../plugins/python-uv/install.sh")),
     },
     BundledPlugin {
         manifest_yaml: include_str!("../plugins/go/plugin.yaml"),
-        install_script: include_str!("../plugins/go/install.sh"),
+        install_script: Some(include_str!("../plugins/go/install.sh")),
     },
+    // Project-layer: tools
     BundledPlugin {
         manifest_yaml: include_str!("../plugins/neovim/plugin.yaml"),
-        install_script: include_str!("../plugins/neovim/install.sh"),
+        install_script: Some(include_str!("../plugins/neovim/install.sh")),
     },
     BundledPlugin {
-        manifest_yaml: include_str!("../plugins/claude-unchained/plugin.yaml"),
-        install_script: include_str!("../plugins/claude-unchained/install.sh"),
+        manifest_yaml: include_str!("../plugins/claude/plugin.yaml"),
+        install_script: Some(include_str!("../plugins/claude/install.sh")),
+    },
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/chromium/plugin.yaml"),
+        install_script: Some(include_str!("../plugins/chromium/install.sh")),
+    },
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/git/plugin.yaml"),
+        install_script: Some(include_str!("../plugins/git/install.sh")),
+    },
+    // Shell-layer: installed by shell selection
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/fish/plugin.yaml"),
+        install_script: Some(include_str!("../plugins/fish/install.sh")),
+    },
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/zsh/plugin.yaml"),
+        install_script: Some(include_str!("../plugins/zsh/install.sh")),
+    },
+    // User-layer: config-only plugins (no install script)
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/ssh-keys/plugin.yaml"),
+        install_script: None,
+    },
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/git-config/plugin.yaml"),
+        install_script: None,
+    },
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/fish-config/plugin.yaml"),
+        install_script: None,
+    },
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/zsh-config/plugin.yaml"),
+        install_script: None,
+    },
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/neovim-config/plugin.yaml"),
+        install_script: None,
+    },
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/claude-config/plugin.yaml"),
+        install_script: None,
     },
 ];
 
@@ -111,7 +193,7 @@ impl PluginRegistry {
                         name,
                         Plugin {
                             manifest,
-                            install_script: bp.install_script.to_string(),
+                            install_script: bp.install_script.map(|s| s.to_string()),
                             source: PluginSource::Bundled,
                         },
                     );
@@ -153,6 +235,7 @@ impl PluginRegistry {
     }
 
     /// List all available plugin names.
+    #[allow(dead_code)]
     pub fn available_names(&self) -> Vec<&str> {
         self.plugins
             .iter()
@@ -161,8 +244,17 @@ impl PluginRegistry {
     }
 
     /// List all available plugins.
+    #[allow(dead_code)]
     pub fn available_plugins(&self) -> &[Plugin] {
         &self.plugins
+    }
+
+    /// List plugins filtered by layer.
+    pub fn plugins_for_layer(&self, layer: PluginLayer) -> Vec<&Plugin> {
+        self.plugins
+            .iter()
+            .filter(|p| p.manifest.layer == layer)
+            .collect()
     }
 
     /// Validate that all requested environment names have plugins.
@@ -212,17 +304,21 @@ fn load_plugins_from_dir(dir: &Path, source: PluginSource) -> Vec<Plugin> {
             }
         };
 
-        let script_path = path.join(&manifest.provision.script);
-        let install_script = match std::fs::read_to_string(&script_path) {
-            Ok(s) => s,
-            Err(e) => {
-                eprintln!(
-                    "warning: skipping plugin '{}': cannot read {}: {e}",
-                    manifest.name,
-                    script_path.display()
-                );
-                continue;
+        let install_script = if let Some(ref script_name) = manifest.provision.script {
+            let script_path = path.join(script_name);
+            match std::fs::read_to_string(&script_path) {
+                Ok(s) => Some(s),
+                Err(e) => {
+                    eprintln!(
+                        "warning: skipping plugin '{}': cannot read {}: {e}",
+                        manifest.name,
+                        script_path.display()
+                    );
+                    continue;
+                }
             }
+        } else {
+            None
         };
 
         plugins.push(Plugin {
@@ -248,15 +344,36 @@ mod tests {
         assert!(names.contains(&"python-uv"));
         assert!(names.contains(&"go"));
         assert!(names.contains(&"neovim"));
+        assert!(names.contains(&"ssh-keys"));
+        assert!(names.contains(&"git-config"));
+        assert!(names.contains(&"fish-config"));
+        assert!(names.contains(&"zsh-config"));
+        assert!(names.contains(&"neovim-config"));
+        assert!(names.contains(&"claude-config"));
     }
 
     #[test]
     fn bundled_plugins_have_install_scripts() {
         let registry = PluginRegistry::load().unwrap();
         for plugin in registry.available_plugins() {
+            if plugin.manifest.layer != PluginLayer::User {
+                assert!(
+                    plugin.install_script.is_some(),
+                    "plugin '{}' (layer: {:?}) should have install script",
+                    plugin.manifest.name,
+                    plugin.manifest.layer
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn user_layer_plugins_have_no_install_script() {
+        let registry = PluginRegistry::load().unwrap();
+        for plugin in registry.plugins_for_layer(PluginLayer::User) {
             assert!(
-                !plugin.install_script.is_empty(),
-                "plugin '{}' has empty install script",
+                plugin.install_script.is_none(),
+                "user-layer plugin '{}' should have no install script",
                 plugin.manifest.name
             );
         }
@@ -275,7 +392,7 @@ mod tests {
         let registry = PluginRegistry::load().unwrap();
         let rust = registry.get("rust").unwrap();
         assert_eq!(rust.manifest.name, "rust");
-        assert!(rust.install_script.contains("rustup"));
+        assert!(rust.install_script.as_ref().unwrap().contains("rustup"));
     }
 
     #[test]
@@ -320,6 +437,51 @@ mod tests {
                 .unwrap()
                 .contains("rustc")
         );
+    }
+
+    #[test]
+    fn plugin_layers_correct() {
+        let registry = PluginRegistry::load().unwrap();
+
+        assert_eq!(registry.get("fish").unwrap().manifest.layer, PluginLayer::Shell);
+        assert_eq!(registry.get("zsh").unwrap().manifest.layer, PluginLayer::Shell);
+
+        assert_eq!(registry.get("ssh-keys").unwrap().manifest.layer, PluginLayer::User);
+        assert_eq!(registry.get("git-config").unwrap().manifest.layer, PluginLayer::User);
+        assert_eq!(registry.get("fish-config").unwrap().manifest.layer, PluginLayer::User);
+
+        assert_eq!(registry.get("rust").unwrap().manifest.layer, PluginLayer::Project);
+        assert_eq!(registry.get("git").unwrap().manifest.layer, PluginLayer::Project);
+        assert_eq!(registry.get("chromium").unwrap().manifest.layer, PluginLayer::Project);
+    }
+
+    #[test]
+    fn user_plugins_have_auto_detect() {
+        let registry = PluginRegistry::load().unwrap();
+        for plugin in registry.plugins_for_layer(PluginLayer::User) {
+            assert!(
+                plugin.manifest.auto_detect.is_some(),
+                "user-layer plugin '{}' should have auto_detect",
+                plugin.manifest.name
+            );
+        }
+    }
+
+    #[test]
+    fn plugins_for_layer() {
+        let registry = PluginRegistry::load().unwrap();
+
+        let user_plugins = registry.plugins_for_layer(PluginLayer::User);
+        assert!(!user_plugins.is_empty());
+        for p in &user_plugins {
+            assert_eq!(p.manifest.layer, PluginLayer::User);
+        }
+
+        let project_plugins = registry.plugins_for_layer(PluginLayer::Project);
+        assert!(!project_plugins.is_empty());
+        for p in &project_plugins {
+            assert_eq!(p.manifest.layer, PluginLayer::Project);
+        }
     }
 
     #[test]

@@ -1,0 +1,12 @@
+name: neovim-config
+description: "Import host Neovim configuration"
+version: "1.0.0"
+layer: user
+auto_detect:
+  host_path: .config/nvim
+provision:
+  script: ~
+paths:
+  host_copy:
+    - from: .config/nvim
+      to: .config/nvim

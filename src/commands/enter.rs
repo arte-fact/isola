@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::error::IsolaError;
 use crate::paths;
+use crate::plugin::PluginRegistry;
 use crate::sandbox::config::SandboxConfig;
 use crate::sandbox::namespace::{SandboxExec, enter_sandbox};
 
@@ -14,29 +15,52 @@ pub fn run(name: &str, workspace: Option<PathBuf>) -> Result<i32, IsolaError> {
     let config = SandboxConfig::load(name)?;
     let workspace = workspace.or(config.workspace);
 
-    // Resolve host SSH directory if sharing is enabled
-    let ssh_dir = if config.share_ssh {
-        std::env::var("HOME")
-            .ok()
-            .map(|h| PathBuf::from(h).join(".ssh"))
-            .filter(|p| p.exists())
-    } else {
-        None
-    };
+    // Collect plugin-declared host bind-mounts (includes ssh-keys, git-config, etc.)
+    let host_mounts = collect_host_mounts(&config.environments);
+
+    let mut env_vars = build_env_vars(true);
+    env_vars.push(format!("ISOLA_SANDBOX={}", config.name));
+    if config.share_display {
+        for var in &["DISPLAY", "WAYLAND_DISPLAY", "XDG_SESSION_TYPE"] {
+            if let Ok(val) = std::env::var(var) {
+                env_vars.push(format!("{var}={val}"));
+            }
+        }
+        env_vars.push("XAUTHORITY=/home/sandbox/.Xauthority".to_string());
+    }
 
     let exec = SandboxExec {
         rootfs: rootfs.to_string_lossy().to_string(),
         exec_path: config.shell.bin_path().to_string(),
         exec_args: config.shell.login_args(),
-        env_vars: build_env_vars(true),
+        env_vars,
         workspace_host: workspace.map(|p| p.to_string_lossy().to_string()),
-        ssh_dir: ssh_dir.map(|p| p.to_string_lossy().to_string()),
+        host_mounts,
+        share_display: config.share_display,
         run_as_uid: Some(1000u32),
         multi_uid: true,
         capture_output: false,
     };
 
     enter_sandbox(exec)
+}
+
+/// Collect host_mount entries from the given environments' plugins.
+pub fn collect_host_mounts(environments: &[String]) -> Vec<(String, String, bool)> {
+    let Ok(registry) = PluginRegistry::load() else {
+        return vec![];
+    };
+    environments
+        .iter()
+        .filter_map(|e| registry.get(e))
+        .flat_map(|p| {
+            p.manifest
+                .paths
+                .host_mount
+                .iter()
+                .map(|m| (m.from.clone(), m.to.clone(), m.readonly))
+        })
+        .collect()
 }
 
 /// Enter sandbox to run a command with captured stdout+stderr (used by progress UI).
@@ -57,7 +81,8 @@ pub fn run_command_captured(
         exec_args: vec!["bash".to_string(), "-c".to_string(), command.to_string()],
         env_vars,
         workspace_host: None,
-        ssh_dir: None,
+        host_mounts: vec![],
+        share_display: false,
         run_as_uid: None,
         multi_uid: true,
         capture_output: true,
@@ -81,7 +106,8 @@ pub fn run_command(name: &str, command: &str) -> Result<i32, IsolaError> {
         exec_args: vec!["bash".to_string(), "-c".to_string(), command.to_string()],
         env_vars,
         workspace_host: None,
-        ssh_dir: None,
+        host_mounts: vec![],
+        share_display: false,
         run_as_uid: None,
         multi_uid: true,
         capture_output: false,
@@ -97,6 +123,7 @@ pub fn build_env_vars(as_sandbox_user: bool) -> Vec<String> {
             "HOME=/home/sandbox".to_string(),
             "USER=sandbox".to_string(),
             "LANG=C.UTF-8".to_string(),
+            "XDG_RUNTIME_DIR=/run/user/1000".to_string(),
         ]
     } else {
         vec![
@@ -104,6 +131,7 @@ pub fn build_env_vars(as_sandbox_user: bool) -> Vec<String> {
             "HOME=/root".to_string(),
             "USER=root".to_string(),
             "LANG=C.UTF-8".to_string(),
+            "XDG_RUNTIME_DIR=/run/user/0".to_string(),
         ]
     };
 
@@ -135,6 +163,7 @@ mod tests {
                 .any(|v| v.starts_with("PATH=") && v.contains("/home/sandbox/.cargo/bin"))
         );
         assert!(vars.iter().any(|v| v == "LANG=C.UTF-8"));
+        assert!(vars.iter().any(|v| v == "XDG_RUNTIME_DIR=/run/user/1000"));
     }
 
     #[test]
@@ -146,6 +175,7 @@ mod tests {
             vars.iter()
                 .any(|v| v.starts_with("PATH=") && v.contains("/root/.cargo/bin"))
         );
+        assert!(vars.iter().any(|v| v == "XDG_RUNTIME_DIR=/run/user/0"));
     }
 
     #[test]

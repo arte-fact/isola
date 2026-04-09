@@ -50,18 +50,6 @@ ln -sf /usr/bin/fdfind /usr/local/bin/fd 2>/dev/null || true
 ln -sf /usr/bin/batcat /usr/local/bin/bat 2>/dev/null || true
 "#;
 
-const PROVISION_FISH: &str = r#"
-echo ">>> Installing fish shell..."
-apt-get install -y --no-install-recommends fish || true
-dpkg --configure -a --force-overwrite 2>/dev/null || true
-"#;
-
-const PROVISION_ZSH: &str = r#"
-echo ">>> Installing zsh..."
-apt-get install -y --no-install-recommends zsh || true
-dpkg --configure -a --force-overwrite 2>/dev/null || true
-"#;
-
 /// Read the host's git user.name and user.email, returning a .gitconfig string if either is set.
 fn build_host_gitconfig() -> Option<String> {
     let name = std::process::Command::new("git")
@@ -104,18 +92,13 @@ pub fn build_provision_script(
     // Base packages (always)
     script.push_str(PROVISION_BASE);
 
-    // Shell (if not bash)
-    match shell {
-        SandboxShell::Fish => script.push_str(PROVISION_FISH),
-        SandboxShell::Zsh => script.push_str(PROVISION_ZSH),
-        SandboxShell::Bash => {}
-    }
-
-    // Selected environments (from plugins)
+    // Selected environments (from plugins; shell plugins run here too; config-only plugins skipped)
     for env in environments {
         if let Some(plugin) = registry.get(env) {
-            script.push('\n');
-            script.push_str(&plugin.install_script);
+            if let Some(ref install_script) = plugin.install_script {
+                script.push('\n');
+                script.push_str(install_script);
+            }
         } else {
             eprintln!("warning: unknown environment '{env}', skipping");
         }
@@ -143,6 +126,11 @@ fi
 mkdir -p /etc/sudoers.d
 echo "sandbox ALL=(ALL:ALL) NOPASSWD:ALL" > /etc/sudoers.d/sandbox
 chmod 440 /etc/sudoers.d/sandbox
+
+mkdir -p /run/user/0 /run/user/1000
+chown 0:0 /run/user/0
+chown 1000:1000 /run/user/1000
+chmod 700 /run/user/0 /run/user/1000
 "#,
     );
 
@@ -151,8 +139,11 @@ chmod 440 /etc/sudoers.d/sandbox
     for env in environments {
         if let Some(plugin) = registry.get(env) {
             for cp in &plugin.manifest.paths.copy {
+                if let Some(parent) = std::path::Path::new(&cp.to).parent() {
+                    script.push_str(&format!("mkdir -p {}\n", parent.display()));
+                }
                 script.push_str(&format!(
-                    "cp -r {} {} 2>/dev/null || true\n",
+                    "cp -rp {} {} 2>/dev/null || true\n",
                     cp.from, cp.to
                 ));
             }
@@ -163,6 +154,19 @@ chmod 440 /etc/sudoers.d/sandbox
     }
 
     script.push_str("chown -R 1000:1000 /home/sandbox/\n");
+
+    // Ensure all files directly in plugin bin directories are executable.
+    // Some installers (e.g. Claude Code) target the sandbox user directly and
+    // create files without the execute bit; this fixes it generically.
+    for env in environments {
+        if let Some(plugin) = registry.get(env) {
+            for bin in &plugin.manifest.paths.bin {
+                script.push_str(&format!(
+                    "find {bin} -maxdepth 1 -type f -exec chmod a+x {{}} + 2>/dev/null || true\n"
+                ));
+            }
+        }
+    }
 
     // Build PATH for sandbox user
     path_parts.push("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
@@ -438,14 +442,6 @@ pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), IsolaError> {
     Ok(())
 }
 
-pub fn detect_neovim() -> bool {
-    std::process::Command::new("which")
-        .arg("nvim")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), IsolaError> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -464,7 +460,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), IsolaError> {
 pub fn post_setup_rootfs(
     rootfs: &Path,
     name: &str,
-    shell: &SandboxShell,
     environments: &[String],
     registry: &PluginRegistry,
 ) -> Result<(), IsolaError> {
@@ -503,43 +498,8 @@ pub fn post_setup_rootfs(
         std::fs::create_dir_all(rootfs.join(dir))?;
     }
 
-    // Copy host shell configuration
-    let home = std::env::var("HOME").ok().map(PathBuf::from);
-    match shell {
-        SandboxShell::Fish => {
-            if let Some(ref h) = home {
-                let fish_dir = h.join(".config/fish");
-                if fish_dir.exists() {
-                    let target = rootfs.join("home/sandbox/.config/fish");
-                    copy_dir_recursive(&fish_dir, &target)?;
-                }
-            }
-        }
-        SandboxShell::Zsh => {
-            if let Some(ref h) = home {
-                for file in &[".zshrc", ".zshenv"] {
-                    let src = h.join(file);
-                    if src.exists() {
-                        std::fs::copy(&src, rootfs.join("home/sandbox").join(file))?;
-                    }
-                }
-            }
-        }
-        SandboxShell::Bash => {}
-    }
-
-    // Copy host neovim configuration
-    if environments.iter().any(|e| e == "neovim")
-        && let Some(ref h) = home
-    {
-        let nvim_dir = h.join(".config/nvim");
-        if nvim_dir.exists() {
-            let target = rootfs.join("home/sandbox/.config/nvim");
-            copy_dir_recursive(&nvim_dir, &target)?;
-        }
-    }
-
     // Copy host files specified by plugins (host_copy)
+    let home = std::env::var("HOME").ok().map(PathBuf::from);
     if let Some(ref h) = home {
         for env in environments {
             if let Some(plugin) = registry.get(env) {
@@ -649,12 +609,6 @@ pub fn build_base_layer_script(shell: &SandboxShell) -> String {
 
     script.push_str(PROVISION_BASE);
 
-    match shell {
-        SandboxShell::Fish => script.push_str(PROVISION_FISH),
-        SandboxShell::Zsh => script.push_str(PROVISION_ZSH),
-        SandboxShell::Bash => {}
-    }
-
     // Create sandbox user
     script.push_str(&format!(
         r#"
@@ -672,6 +626,21 @@ fi
 mkdir -p /etc/sudoers.d
 echo "sandbox ALL=(ALL:ALL) NOPASSWD:ALL" > /etc/sudoers.d/sandbox
 chmod 440 /etc/sudoers.d/sandbox
+
+mkdir -p /run/user/0 /run/user/1000
+chown 0:0 /run/user/0
+chown 1000:1000 /run/user/1000
+chmod 700 /run/user/0 /run/user/1000
+"#,
+    );
+
+    // isola sandbox prompt marker for bash
+    script.push_str(
+        r#"cat >> /home/sandbox/.bashrc << 'ISOLA_BASH_EOF'
+if [ -n "${ISOLA_SANDBOX:-}" ]; then
+    PS1="\[\033[0;36m\](isola:${ISOLA_SANDBOX})\[\033[0m\] ${PS1}"
+fi
+ISOLA_BASH_EOF
 "#,
     );
 
@@ -681,21 +650,33 @@ chmod 440 /etc/sudoers.d/sandbox
 
 /// Build a provisioning script for a single environment layer using its plugin.
 /// The script uses a marker file to capture only the files changed by this layer.
+/// Returns None if the plugin is not found or has no install script (config-only plugin).
 pub fn build_env_layer_script(env_name: &str, registry: &PluginRegistry) -> Option<String> {
     let plugin = registry.get(env_name)?;
+    let install_script = plugin.install_script.as_ref()?;
 
     let mut script = String::from(LAYER_CAPTURE_HEADER);
-    script.push_str(&plugin.install_script);
+    script.push_str(install_script);
 
     // Copy tools to sandbox user (from plugin paths.copy)
     for cp in &plugin.manifest.paths.copy {
+        if let Some(parent) = std::path::Path::new(&cp.to).parent() {
+            script.push_str(&format!("mkdir -p {}\n", parent.display()));
+        }
         script.push_str(&format!(
-            "cp -r {} {} 2>/dev/null || true\n",
+            "cp -rp {} {} 2>/dev/null || true\n",
             cp.from, cp.to
         ));
         script.push_str(&format!(
             "chown -R 1000:1000 {} 2>/dev/null || true\n",
             cp.to
+        ));
+    }
+
+    // Ensure files in plugin bin directories are executable
+    for bin in &plugin.manifest.paths.bin {
+        script.push_str(&format!(
+            "find {bin} -maxdepth 1 -type f -exec chmod a+x {{}} + 2>/dev/null || true\n"
         ));
     }
 
@@ -908,7 +889,7 @@ mod tests {
         let envs = vec!["rust".to_string()];
         let script = build_provision_script(&envs, &SandboxShell::Bash, &r);
         assert!(script.contains("/home/sandbox/.cargo/bin"));
-        assert!(script.contains("cp -r /root/.cargo /home/sandbox/.cargo"));
+        assert!(script.contains("cp -rp /root/.cargo /home/sandbox/.cargo"));
     }
 
     #[test]
@@ -922,7 +903,8 @@ mod tests {
     #[test]
     fn provision_script_installs_fish() {
         let r = registry();
-        let script = build_provision_script(&[], &SandboxShell::Fish, &r);
+        let envs = vec!["fish".to_string()];
+        let script = build_provision_script(&envs, &SandboxShell::Fish, &r);
         assert!(script.contains("Installing fish shell"));
         assert!(script.contains("/usr/bin/fish"));
     }
@@ -930,7 +912,8 @@ mod tests {
     #[test]
     fn provision_script_installs_zsh() {
         let r = registry();
-        let script = build_provision_script(&[], &SandboxShell::Zsh, &r);
+        let envs = vec!["zsh".to_string()];
+        let script = build_provision_script(&envs, &SandboxShell::Zsh, &r);
         assert!(script.contains("Installing zsh"));
         assert!(script.contains("/usr/bin/zsh"));
     }
@@ -970,13 +953,15 @@ mod tests {
     }
 
     #[test]
-    fn base_layer_script_includes_shell() {
+    fn base_layer_script_shell_for_useradd() {
         let fish = build_base_layer_script(&SandboxShell::Fish);
-        assert!(fish.contains("Installing fish shell"));
+        // Base layer sets correct shell for useradd but does NOT install it (plugin does)
         assert!(fish.contains("/usr/bin/fish"));
+        assert!(!fish.contains("Installing fish shell"));
 
         let zsh = build_base_layer_script(&SandboxShell::Zsh);
-        assert!(zsh.contains("Installing zsh"));
+        assert!(zsh.contains("/usr/bin/zsh"));
+        assert!(!zsh.contains("Installing zsh"));
     }
 
     #[test]
@@ -984,7 +969,7 @@ mod tests {
         let r = registry();
         let script = build_env_layer_script("rust", &r).unwrap();
         assert!(script.contains("Installing Rust"));
-        assert!(script.contains("cp -r /root/.cargo /home/sandbox/.cargo"));
+        assert!(script.contains("cp -rp /root/.cargo /home/sandbox/.cargo"));
         assert!(script.contains(".layer_marker"));
         assert!(script.contains(".layer_cache.tar.gz"));
     }

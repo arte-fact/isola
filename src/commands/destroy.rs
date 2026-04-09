@@ -32,7 +32,9 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
             ],
             env_vars: build_env_vars(false),
             workspace_host: None,
-            ssh_dir: None,
+
+            host_mounts: vec![],
+            share_display: false,
             run_as_uid: None,
             multi_uid: true,
             capture_output: false,

@@ -1,0 +1,7 @@
+name: chromium
+description: "Google Chrome (for Chrome MCP and GUI browser)"
+version: "1.0.0"
+layer: project
+provision:
+  script: install.sh
+  verify: google-chrome --version

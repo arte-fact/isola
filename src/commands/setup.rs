@@ -5,9 +5,8 @@ use inquire::{Confirm, MultiSelect, Select, Text};
 
 use crate::error::IsolaError;
 use crate::paths;
-use crate::plugin::PluginRegistry;
+use crate::plugin::{PluginLayer, PluginRegistry};
 use crate::sandbox::config::{LocalConfig, SandboxShell};
-use crate::sandbox::rootfs;
 
 #[derive(Clone)]
 struct PluginChoice {
@@ -39,29 +38,7 @@ pub fn run() -> Result<(), IsolaError> {
         .prompt()
         .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
 
-    // 2. Environment selection (from plugin registry, excluding neovim which gets its own prompt)
-    let env_options: Vec<PluginChoice> = registry
-        .available_plugins()
-        .iter()
-        .filter(|p| p.manifest.name != "neovim")
-        .map(|p| PluginChoice {
-            name: p.manifest.name.clone(),
-            description: p.manifest.description.clone(),
-        })
-        .collect();
-
-    let selected = MultiSelect::new("Select environments to install:", env_options)
-        .with_help_message("Space to toggle, Enter to confirm")
-        .prompt()
-        .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
-
-    let mut env_ids: Vec<String> = selected.iter().map(|e| e.name.clone()).collect();
-
-    if env_ids.is_empty() {
-        eprintln!("No environments selected, installing base system only.");
-    }
-
-    // 3. Workspace confirmation
+    // 2. Workspace confirmation
     let cwd = std::env::current_dir()
         .ok()
         .and_then(|p| std::fs::canonicalize(&p).ok())
@@ -69,7 +46,7 @@ pub fn run() -> Result<(), IsolaError> {
 
     let workspace = Text::new("Workspace directory:")
         .with_default(&cwd.to_string_lossy())
-        .with_help_message("Host directory to mount at /workspace inside the sandbox")
+        .with_help_message("Host directory to mount inside the sandbox (at /<dirname>)")
         .prompt()
         .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
 
@@ -84,22 +61,7 @@ pub fn run() -> Result<(), IsolaError> {
         }
     }
 
-    // 4. Share SSH keys?
-    let host_ssh_dir = std::env::var("HOME")
-        .ok()
-        .map(|h| PathBuf::from(h).join(".ssh"))
-        .filter(|p| p.exists());
-    let share_ssh = if host_ssh_dir.is_some() {
-        Confirm::new("Share host SSH keys with the sandbox? (read-only)")
-            .with_default(true)
-            .with_help_message("Enables git push/pull over SSH inside the sandbox")
-            .prompt()
-            .map_err(|e| IsolaError::ConfigError(e.to_string()))?
-    } else {
-        false
-    };
-
-    // 5. Shell selection
+    // 3. Shell selection (auto-detected from host)
     let detected_shell = SandboxShell::detect_from_host();
     let shell_options = vec!["bash", "fish", "zsh"];
     let default_idx = shell_options
@@ -120,18 +82,95 @@ pub fn run() -> Result<(), IsolaError> {
         _ => SandboxShell::Bash,
     };
 
-    // 6. Neovim detection (only if the neovim plugin exists)
-    if registry.get("neovim").is_some() {
-        let host_has_neovim = rootfs::detect_neovim();
-        if host_has_neovim {
-            let install = Confirm::new("Neovim detected on host. Install in sandbox?")
-                .with_default(true)
-                .prompt()
-                .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
-            if install {
-                env_ids.push("neovim".to_string());
-            }
-        }
+    // 4. Display sharing (auto-detected)
+    let has_display = std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok();
+    let share_display = if has_display {
+        Confirm::new("Share host display with the sandbox?")
+            .with_default(true)
+            .with_help_message(
+                "Enables GUI apps, Chrome MCP, and Claude browser login inside the sandbox",
+            )
+            .prompt()
+            .map_err(|e| IsolaError::ConfigError(e.to_string()))?
+    } else {
+        false
+    };
+
+    // 5. User Setup: personal config from host (auto-detected defaults)
+    let home = std::env::var("HOME").ok().map(PathBuf::from);
+    let user_plugins: Vec<PluginChoice> = registry
+        .plugins_for_layer(PluginLayer::User)
+        .into_iter()
+        .map(|p| PluginChoice {
+            name: p.manifest.name.clone(),
+            description: p.manifest.description.clone(),
+        })
+        .collect();
+
+    let user_defaults: Vec<usize> = registry
+        .plugins_for_layer(PluginLayer::User)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            let detected = p
+                .manifest
+                .auto_detect
+                .as_ref()
+                .map(|ad| {
+                    home.as_ref()
+                        .map(|h| h.join(&ad.host_path).exists())
+                        .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            if detected { Some(i) } else { None }
+        })
+        .collect();
+
+    let selected_user = if !user_plugins.is_empty() {
+        MultiSelect::new("User setup — import from host:", user_plugins)
+            .with_default(&user_defaults)
+            .with_help_message("Space to toggle, Enter to confirm — pre-selected = detected on host")
+            .prompt()
+            .map_err(|e| IsolaError::ConfigError(e.to_string()))?
+    } else {
+        vec![]
+    };
+
+    // 6. Project Tooling: software to install in the sandbox (no defaults)
+    let project_plugins: Vec<PluginChoice> = registry
+        .plugins_for_layer(PluginLayer::Project)
+        .into_iter()
+        .map(|p| PluginChoice {
+            name: p.manifest.name.clone(),
+            description: p.manifest.description.clone(),
+        })
+        .collect();
+
+    let selected_project = if !project_plugins.is_empty() {
+        MultiSelect::new("Project tooling — install in sandbox:", project_plugins)
+            .with_help_message("Space to toggle, Enter to confirm")
+            .prompt()
+            .map_err(|e| IsolaError::ConfigError(e.to_string()))?
+    } else {
+        vec![]
+    };
+
+    // Combine selected environments from both sections
+    let mut env_ids: Vec<String> = selected_user
+        .iter()
+        .chain(selected_project.iter())
+        .map(|e| e.name.clone())
+        .collect();
+
+    // Auto-add shell plugin based on shell choice
+    match shell {
+        SandboxShell::Fish => env_ids.push("fish".to_string()),
+        SandboxShell::Zsh => env_ids.push("zsh".to_string()),
+        SandboxShell::Bash => {}
+    }
+
+    if env_ids.is_empty() {
+        eprintln!("No plugins selected, installing base system only.");
     }
 
     // 7. Create sandbox with selected options
@@ -139,7 +178,7 @@ pub fn run() -> Result<(), IsolaError> {
         &name,
         Some(workspace_path.clone()),
         &env_ids,
-        share_ssh,
+        share_display,
         false,
         &shell,
         &registry,
@@ -150,7 +189,7 @@ pub fn run() -> Result<(), IsolaError> {
         let local = LocalConfig {
             environments: Some(env_ids.clone()),
             shell: Some(shell.clone()),
-            share_ssh: Some(share_ssh),
+            share_display: if share_display { Some(true) } else { None },
         };
         local.save(&workspace_path)?;
         eprintln!("Saved .isola/config.yaml — commit to share sandbox config with your team.");

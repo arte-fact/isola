@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nix::mount::{MsFlags, mount};
 
@@ -23,7 +23,8 @@ fn do_mount(
 pub fn setup_mounts(
     rootfs: &Path,
     workspace_host: Option<&Path>,
-    ssh_dir: Option<&Path>,
+    host_mounts: &[(String, String, bool)],
+    share_display: bool,
 ) -> Result<(), IsolaError> {
     let none: Option<&str> = None;
 
@@ -161,9 +162,13 @@ pub fn setup_mounts(
         none,
     )?;
 
-    // 11. Bind-mount workspace (if provided)
+    // 11. Bind-mount workspace (if provided), using the actual directory name
     if let Some(ws) = workspace_host {
-        let ws_target = rootfs.join("workspace");
+        let dir_name = ws
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("workspace");
+        let ws_target = rootfs.join(dir_name);
         std::fs::create_dir_all(&ws_target)?;
         do_mount(
             "workspace",
@@ -188,29 +193,94 @@ pub fn setup_mounts(
         )?;
     }
 
-    // 13. Bind-mount host SSH directory (read-only)
-    if let Some(ssh) = ssh_dir
-        && ssh.exists()
-    {
-        let ssh_target = rootfs.join("home/sandbox/.ssh");
-        std::fs::create_dir_all(&ssh_target)?;
+    // 13. Plugin-declared host directory bind-mounts (host_mount in plugin.yaml)
+    let home = std::env::var("HOME").unwrap_or_default();
+    for (from, to, readonly) in host_mounts {
+        let src = PathBuf::from(&home).join(from);
+        if !src.exists() {
+            continue;
+        }
+        let target = rootfs.join("home/sandbox").join(to);
+        if src.is_dir() {
+            std::fs::create_dir_all(&target)?;
+        } else {
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::File::create(&target)?;
+        }
         do_mount(
-            "ssh dir",
-            Some(&ssh.to_string_lossy()),
-            &ssh_target,
+            &format!("host_mount {from}"),
+            Some(&src.to_string_lossy()),
+            &target,
             none,
             MsFlags::MS_BIND | MsFlags::MS_REC,
             none,
         )?;
-        // Remount read-only
-        if let Err(e) = mount(
-            none,
-            &ssh_target,
-            none,
-            MsFlags::MS_BIND | MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY | MsFlags::MS_REC,
-            none,
-        ) {
-            eprintln!("warning: could not remount SSH directory read-only: {e}");
+        if *readonly
+            && let Err(e) = mount(
+                none,
+                &target,
+                none,
+                MsFlags::MS_BIND | MsFlags::MS_REMOUNT | MsFlags::MS_RDONLY | MsFlags::MS_REC,
+                none,
+            )
+        {
+            eprintln!("warning: could not remount {from} read-only: {e}");
+        }
+    }
+
+    // 14. Display sharing (X11/Wayland) when requested
+    if share_display {
+        // X11: bind-mount /tmp/.X11-unix into the tmpfs already mounted at tmp_path
+        if Path::new("/tmp/.X11-unix").exists() {
+            let x11_target = tmp_path.join(".X11-unix");
+            std::fs::create_dir_all(&x11_target)?;
+            do_mount(
+                "X11 sockets",
+                Some("/tmp/.X11-unix"),
+                &x11_target,
+                none,
+                MsFlags::MS_BIND | MsFlags::MS_REC,
+                none,
+            )?;
+        }
+
+        // Wayland: bind-mount socket file into /run/user/1000/
+        let host_xdg =
+            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
+        if let Ok(wayland) = std::env::var("WAYLAND_DISPLAY") {
+            let host_sock = PathBuf::from(&host_xdg).join(&wayland);
+            if host_sock.exists() {
+                let sandbox_sock = rootfs.join("run/user/1000").join(&wayland);
+                std::fs::File::create(&sandbox_sock)?;
+                do_mount(
+                    "wayland socket",
+                    Some(&host_sock.to_string_lossy()),
+                    &sandbox_sock,
+                    none,
+                    MsFlags::MS_BIND,
+                    none,
+                )?;
+            }
+        }
+
+        // Xauthority: bind-mount to /home/sandbox/.Xauthority
+        let xauth = std::env::var("XAUTHORITY").unwrap_or_else(|_| {
+            format!("{}/.Xauthority", std::env::var("HOME").unwrap_or_default())
+        });
+        let xauth_path = PathBuf::from(&xauth);
+        if xauth_path.exists() {
+            let sandbox_xauth = rootfs.join("home/sandbox/.Xauthority");
+            std::fs::File::create(&sandbox_xauth)?;
+            do_mount(
+                "Xauthority",
+                Some(&xauth_path.to_string_lossy()),
+                &sandbox_xauth,
+                none,
+                MsFlags::MS_BIND,
+                none,
+            )?;
         }
     }
 

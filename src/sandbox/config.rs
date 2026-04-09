@@ -72,7 +72,7 @@ pub struct SandboxConfig {
     #[serde(default)]
     pub environments: Vec<String>,
     #[serde(default)]
-    pub share_ssh: bool,
+    pub share_display: bool,
     #[serde(default)]
     pub shell: SandboxShell,
 }
@@ -102,7 +102,7 @@ pub struct LocalConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shell: Option<SandboxShell>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub share_ssh: Option<bool>,
+    pub share_display: Option<bool>,
 }
 
 impl LocalConfig {
@@ -161,7 +161,7 @@ mod tests {
             rootfs_url: "https://example.com/rootfs.tar.gz".to_string(),
             workspace: Some(std::path::PathBuf::from("/home/user/project")),
             environments: vec!["rust".to_string(), "nodejs".to_string()],
-            share_ssh: true,
+            share_display: false,
             shell: SandboxShell::Fish,
         };
 
@@ -169,7 +169,7 @@ mod tests {
         let deserialized: SandboxConfig = serde_json::from_str(&json).unwrap();
 
         assert_eq!(deserialized.name, config.name);
-        assert_eq!(deserialized.share_ssh, config.share_ssh);
+        assert_eq!(deserialized.share_display, config.share_display);
         assert_eq!(deserialized.rootfs_url, config.rootfs_url);
         assert_eq!(deserialized.workspace, config.workspace);
         assert_eq!(deserialized.environments, config.environments);
@@ -239,7 +239,7 @@ mod tests {
         let config = LocalConfig {
             environments: Some(vec!["rust".to_string(), "nodejs".to_string()]),
             shell: Some(SandboxShell::Fish),
-            share_ssh: Some(true),
+            share_display: None,
         };
 
         let yaml = serde_yaml::to_string(&config).unwrap();
@@ -250,7 +250,6 @@ mod tests {
             Some(vec!["rust".to_string(), "nodejs".to_string()])
         );
         assert_eq!(deserialized.shell, Some(SandboxShell::Fish));
-        assert_eq!(deserialized.share_ssh, Some(true));
     }
 
     #[test]
@@ -259,7 +258,7 @@ mod tests {
         let config: LocalConfig = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.environments, Some(vec!["rust".to_string()]));
         assert!(config.shell.is_none());
-        assert!(config.share_ssh.is_none());
+        assert!(config.share_display.is_none());
     }
 
     #[test]
@@ -286,14 +285,13 @@ mod tests {
         let config = LocalConfig {
             environments: Some(vec!["go".to_string()]),
             shell: Some(SandboxShell::Zsh),
-            share_ssh: None,
+            share_display: None,
         };
 
         config.save(&dir).unwrap();
         let loaded = LocalConfig::load(&dir).unwrap().unwrap();
         assert_eq!(loaded.environments, Some(vec!["go".to_string()]));
         assert_eq!(loaded.shell, Some(SandboxShell::Zsh));
-        assert!(loaded.share_ssh.is_none());
 
         let _ = std::fs::remove_dir_all(&dir);
     }

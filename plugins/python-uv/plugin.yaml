@@ -1,6 +1,7 @@
 name: python-uv
 description: "Python 3 + uv"
 version: "1.0.0"
+layer: project
 provision:
   script: install.sh
   verify: "python3 --version && /root/.local/bin/uv --version"

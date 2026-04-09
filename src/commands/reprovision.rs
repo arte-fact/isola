@@ -18,7 +18,7 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
     let progress = CreationProgress::new(&format!("Re-provisioning '{name}'"));
 
     progress.start_step("Configuring rootfs...");
-    rootfs::post_setup_rootfs(&rootfs_path, name, &config.shell, environments, &registry)?;
+    rootfs::post_setup_rootfs(&rootfs_path, name, environments, &registry)?;
     progress.finish_step("Configured rootfs");
 
     // Check which layers need rebuilding

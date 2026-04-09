@@ -1,0 +1,12 @@
+name: claude-config
+description: "Share host Claude Code configuration"
+version: "1.0.0"
+layer: user
+auto_detect:
+  host_path: .claude
+provision:
+  script: ~
+paths:
+  host_mount:
+    - from: .claude
+      to: .claude

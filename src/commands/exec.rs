@@ -5,7 +5,7 @@ use crate::paths;
 use crate::sandbox::config::SandboxConfig;
 use crate::sandbox::namespace::{SandboxExec, enter_sandbox};
 
-use super::enter::build_env_vars;
+use super::enter::{build_env_vars, collect_host_mounts};
 
 pub fn run(
     name: &str,
@@ -24,18 +24,19 @@ pub fn run(
         return Err(IsolaError::ConfigError("no command specified".to_string()));
     }
 
-    let ssh_dir = if config.share_ssh {
-        std::env::var("HOME")
-            .ok()
-            .map(|h| std::path::PathBuf::from(h).join(".ssh"))
-            .filter(|p| p.exists())
-    } else {
-        None
-    };
-
+    let host_mounts = collect_host_mounts(&config.environments);
     let exec_path = command[0].clone();
     let exec_args = command.clone();
-    let env_vars = build_env_vars(true);
+    let mut env_vars = build_env_vars(true);
+    env_vars.push(format!("ISOLA_SANDBOX={}", name));
+    if config.share_display {
+        for var in &["DISPLAY", "WAYLAND_DISPLAY", "XDG_SESSION_TYPE"] {
+            if let Ok(val) = std::env::var(var) {
+                env_vars.push(format!("{var}={val}"));
+            }
+        }
+        env_vars.push("XAUTHORITY=/home/sandbox/.Xauthority".to_string());
+    }
 
     let exec = SandboxExec {
         rootfs: rootfs.to_string_lossy().to_string(),
@@ -43,7 +44,8 @@ pub fn run(
         exec_args,
         env_vars,
         workspace_host: workspace.map(|p| p.to_string_lossy().to_string()),
-        ssh_dir: ssh_dir.map(|p| p.to_string_lossy().to_string()),
+        host_mounts,
+        share_display: config.share_display,
         run_as_uid: Some(1000),
         multi_uid: true,
         capture_output: false,

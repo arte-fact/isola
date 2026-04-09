@@ -1,6 +1,7 @@
 name: rust
 description: "Rust (rustup + cargo)"
 version: "1.0.0"
+layer: project
 provision:
   script: install.sh
   verify: "rustc --version && cargo --version"

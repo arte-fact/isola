@@ -4,19 +4,34 @@ use chrono::Utc;
 
 use crate::error::IsolaError;
 use crate::paths;
-use crate::plugin::PluginRegistry;
+use crate::plugin::{PluginLayer, PluginRegistry};
 use crate::sandbox::config::{SandboxConfig, SandboxShell};
 use crate::sandbox::rootfs;
 
-/// Create a sandbox with all non-neovim bundled environments (CLI shorthand)
+/// Create a sandbox with all project-layer plugins plus auto-detected user-layer plugins (CLI shorthand).
 pub fn run(name: &str, workspace: Option<PathBuf>, no_cache: bool) -> Result<(), IsolaError> {
     let registry = PluginRegistry::load()?;
-    let envs: Vec<String> = registry
-        .available_names()
+    let home = std::env::var("HOME").ok().map(PathBuf::from);
+
+    let mut envs: Vec<String> = registry
+        .plugins_for_layer(PluginLayer::Project)
         .into_iter()
-        .filter(|n| *n != "neovim")
-        .map(|s| s.to_string())
+        .map(|p| p.manifest.name.clone())
         .collect();
+
+    // Auto-add user-layer plugins whose host path is detected (e.g. claude-config, ssh-keys)
+    for p in registry.plugins_for_layer(PluginLayer::User) {
+        if let Some(ref ad) = p.manifest.auto_detect {
+            if home
+                .as_ref()
+                .map(|h| h.join(&ad.host_path).exists())
+                .unwrap_or(false)
+            {
+                envs.push(p.manifest.name.clone());
+            }
+        }
+    }
+
     run_with_envs(
         name,
         workspace,
@@ -29,11 +44,12 @@ pub fn run(name: &str, workspace: Option<PathBuf>, no_cache: bool) -> Result<(),
 }
 
 /// Create a sandbox with selected environments
+#[allow(clippy::too_many_arguments)]
 pub fn run_with_envs(
     name: &str,
     workspace: Option<PathBuf>,
     environments: &[String],
-    share_ssh: bool,
+    share_display: bool,
     no_cache: bool,
     shell: &SandboxShell,
     registry: &PluginRegistry,
@@ -102,7 +118,13 @@ pub fn run_with_envs(
             progress.start_step(&format!("Provisioning {layer_name}..."));
 
             // Save config early so run_command_captured can find the sandbox
-            save_config(name, &workspace, environments, share_ssh, shell)?;
+            save_config(
+                name,
+                &workspace,
+                environments,
+                share_display,
+                shell,
+            )?;
 
             let child = crate::commands::enter::run_command_captured(name, &script)?;
             let (exit_code, last_lines) =
@@ -145,11 +167,17 @@ pub fn run_with_envs(
 
     // Configure rootfs (sandbox-specific: hostname, git config, shell config, etc.)
     progress.start_step("Configuring rootfs...");
-    rootfs::post_setup_rootfs(&rootfs_path, name, shell, environments, registry)?;
+    rootfs::post_setup_rootfs(&rootfs_path, name, environments, registry)?;
     progress.finish_step("Configured rootfs");
 
     // Save config (may already exist from partial layer build, save again to ensure latest)
-    save_config(name, &workspace, environments, share_ssh, shell)?;
+    save_config(
+        name,
+        &workspace,
+        environments,
+        share_display,
+        shell,
+    )?;
 
     if used_layered_cache {
         // Layered path: fix ownership + set up PATH
@@ -220,7 +248,7 @@ fn save_config(
     name: &str,
     workspace: &Option<PathBuf>,
     environments: &[String],
-    share_ssh: bool,
+    share_display: bool,
     shell: &SandboxShell,
 ) -> Result<(), IsolaError> {
     let config = SandboxConfig {
@@ -232,7 +260,7 @@ fn save_config(
             .or_else(|| std::env::current_dir().ok())
             .map(|p| std::fs::canonicalize(&p).unwrap_or(p)),
         environments: environments.to_vec(),
-        share_ssh,
+        share_display,
         shell: shell.clone(),
     };
     config.save()

@@ -1,6 +1,7 @@
 name: go
 description: "Go (latest)"
 version: "1.0.0"
+layer: project
 provision:
   script: install.sh
   verify: "/usr/local/go/bin/go version"
