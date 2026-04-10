@@ -407,7 +407,7 @@ fn do_pivot_root(rootfs: &Path) -> Result<(), IsolaError> {
         .map_err(|e| IsolaError::NamespaceError(format!("chdir to / failed: {e}")))?;
 
     nix::mount::umount2("/.old_root", nix::mount::MntFlags::MNT_DETACH)
-        .map_err(IsolaError::MountError)?;
+        .map_err(|e| IsolaError::NamespaceError(format!("umount2 /.old_root failed: {e}")))?;
     std::fs::remove_dir("/.old_root")?;
 
     Ok(())
