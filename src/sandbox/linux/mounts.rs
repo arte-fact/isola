@@ -25,6 +25,7 @@ pub fn setup_mounts(
     workspace_host: Option<&Path>,
     host_mounts: &[(String, String, bool)],
     share_display: bool,
+    devices: &[String],
 ) -> Result<(), IsolaError> {
     let none: Option<&str> = None;
 
@@ -112,6 +113,34 @@ pub fn setup_mounts(
         do_mount(
             &format!("/dev/{dev}"),
             Some(&host_dev),
+            &container_dev,
+            none,
+            MsFlags::MS_BIND,
+            none,
+        )?;
+    }
+
+    // 7b. Bind-mount device nodes from host (GPU passthrough, etc.)
+    for device_path in devices {
+        let host_dev = Path::new(device_path);
+        if !host_dev.exists() {
+            continue;
+        }
+        let relative = host_dev.strip_prefix("/dev/").unwrap_or(host_dev.as_ref());
+        let container_dev = dev_path.join(relative);
+
+        if host_dev.is_dir() {
+            std::fs::create_dir_all(&container_dev)?;
+        } else {
+            if let Some(parent) = container_dev.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::File::create(&container_dev)?;
+        }
+
+        do_mount(
+            &format!("device {device_path}"),
+            Some(device_path),
             &container_dev,
             none,
             MsFlags::MS_BIND,

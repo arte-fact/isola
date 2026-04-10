@@ -67,6 +67,10 @@ pub struct PluginPaths {
     #[cfg_attr(target_os = "macos", allow(dead_code))]
     #[serde(default)]
     pub host_mount: Vec<MountEntry>,
+    /// Device nodes to bind-mount from host into the sandbox /dev.
+    /// Each entry is an absolute path (e.g., "/dev/kfd", "/dev/dri").
+    #[serde(default)]
+    pub device: Vec<DeviceEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -82,6 +86,12 @@ pub struct MountEntry {
     pub to: String,
     #[serde(default)]
     pub readonly: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct DeviceEntry {
+    /// Absolute host path (e.g., "/dev/kfd", "/dev/dri")
+    pub path: String,
 }
 
 /// A fully resolved plugin with manifest and optional install script.
@@ -124,6 +134,11 @@ const BUNDLED_PLUGINS: &[BundledPlugin] = &[
         manifest_yaml: include_str!("../plugins/go/plugin.yaml"),
         install_script: Some(include_str!("../plugins/go/install.sh")),
     },
+    // Project-layer: GPU access
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/gpu/plugin.yaml"),
+        install_script: Some(include_str!("../plugins/gpu/install.sh")),
+    },
     // Project-layer: tools
     BundledPlugin {
         manifest_yaml: include_str!("../plugins/neovim/plugin.yaml"),
@@ -140,6 +155,10 @@ const BUNDLED_PLUGINS: &[BundledPlugin] = &[
     BundledPlugin {
         manifest_yaml: include_str!("../plugins/git/plugin.yaml"),
         install_script: Some(include_str!("../plugins/git/install.sh")),
+    },
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/rocm/plugin.yaml"),
+        install_script: Some(include_str!("../plugins/rocm/install.sh")),
     },
     // Shell-layer: installed by shell selection
     BundledPlugin {
@@ -346,6 +365,7 @@ mod tests {
         assert!(names.contains(&"nodejs"));
         assert!(names.contains(&"python-uv"));
         assert!(names.contains(&"go"));
+        assert!(names.contains(&"gpu"));
         assert!(names.contains(&"neovim"));
         assert!(names.contains(&"ssh-keys"));
         assert!(names.contains(&"git-config"));
@@ -469,6 +489,10 @@ mod tests {
         );
 
         assert_eq!(
+            registry.get("gpu").unwrap().manifest.layer,
+            PluginLayer::Project
+        );
+        assert_eq!(
             registry.get("rust").unwrap().manifest.layer,
             PluginLayer::Project
         );
@@ -527,6 +551,33 @@ mod tests {
         assert_eq!(plugins.len(), 1);
         assert_eq!(plugins[0].manifest.description, "Custom Rust");
         assert_eq!(plugins[0].manifest.version, "2.0.0");
+    }
+
+    #[test]
+    fn gpu_plugin_declares_devices() {
+        let registry = PluginRegistry::load().unwrap();
+        let gpu = registry.get("gpu").unwrap();
+        let device_paths: Vec<&str> = gpu
+            .manifest
+            .paths
+            .device
+            .iter()
+            .map(|d| d.path.as_str())
+            .collect();
+        assert!(device_paths.contains(&"/dev/dri"));
+        assert!(device_paths.contains(&"/dev/kfd"));
+        assert!(device_paths.contains(&"/dev/nvidia0"));
+        assert!(device_paths.contains(&"/dev/nvidiactl"));
+    }
+
+    #[test]
+    fn rocm_plugin_has_no_devices() {
+        let registry = PluginRegistry::load().unwrap();
+        let rocm = registry.get("rocm").unwrap();
+        assert!(
+            rocm.manifest.paths.device.is_empty(),
+            "rocm plugin should not declare devices (use gpu instead)"
+        );
     }
 
     #[test]

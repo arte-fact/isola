@@ -19,6 +19,7 @@ pub trait SandboxBackend {
         name: &str,
         shell: bool,
         workspace: Option<&Path>,
+        devices: Vec<String>,
     ) -> Result<i32, IsolaError>;
 
     /// Run a command inside the sandbox as root (used for provisioning).
@@ -30,6 +31,7 @@ pub trait SandboxBackend {
         name: &str,
         command: &[String],
         workspace: Option<&Path>,
+        devices: Vec<String>,
     ) -> Result<i32, IsolaError>;
 
     /// Destroy the sandbox completely.

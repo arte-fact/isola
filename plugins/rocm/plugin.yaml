@@ -1,0 +1,7 @@
+name: rocm
+description: "AMD ROCm GPU compute (HIP, rocBLAS, RCCL)"
+version: "1.0.0"
+layer: project
+provision:
+  script: install.sh
+  verify: "command -v rocminfo"

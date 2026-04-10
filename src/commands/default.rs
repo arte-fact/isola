@@ -10,7 +10,7 @@ pub fn run() -> Result<(), IsolaError> {
     match detect_sandbox()? {
         Some(name) => {
             eprintln!("Entering sandbox '{name}'...");
-            let code = crate::commands::enter::run(&name, None)?;
+            let code = crate::commands::enter::run(&name, None, vec![])?;
             crate::reset_terminal();
             std::process::exit(code);
         }
@@ -19,7 +19,7 @@ pub fn run() -> Result<(), IsolaError> {
             if let Some((project_dir, local_config)) = LocalConfig::find_from_cwd()? {
                 let name = auto_create_from_local_config(&project_dir, &local_config)?;
                 eprintln!("Entering sandbox '{name}'...");
-                let code = crate::commands::enter::run(&name, None)?;
+                let code = crate::commands::enter::run(&name, None, vec![])?;
                 crate::reset_terminal();
                 std::process::exit(code);
             }

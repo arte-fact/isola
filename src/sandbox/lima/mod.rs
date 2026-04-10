@@ -297,6 +297,7 @@ impl SandboxBackend for LimaBackend {
         name: &str,
         shell: bool,
         _workspace: Option<&Path>,
+        _devices: Vec<String>,
     ) -> Result<i32, IsolaError> {
         Self::ensure_vm_running(name)?;
         let vm = Self::vm_name(name);
@@ -373,6 +374,7 @@ impl SandboxBackend for LimaBackend {
         name: &str,
         command: &[String],
         _workspace: Option<&Path>,
+        _devices: Vec<String>,
     ) -> Result<i32, IsolaError> {
         if command.is_empty() {
             return Err(IsolaError::ConfigError("no command specified".to_string()));

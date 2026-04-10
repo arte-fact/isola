@@ -29,6 +29,8 @@ pub struct SandboxExec {
     pub multi_uid: bool,
     /// If true, redirect child stdout+stderr to a pipe readable by the parent.
     pub capture_output: bool,
+    /// Device nodes to bind-mount from host (e.g., "/dev/kfd", "/dev/dri").
+    pub devices: Vec<String>,
 }
 
 /// Handle to a running sandbox process with optional captured output.
@@ -92,6 +94,7 @@ struct ChildArgs {
     host_mounts: Vec<(String, String, bool)>,
     share_display: bool,
     run_as_uid: Option<u32>,
+    devices: Vec<String>,
 }
 
 pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, IsolaError> {
@@ -119,6 +122,7 @@ pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, IsolaError> {
         host_mounts: exec.host_mounts.clone(),
         share_display: exec.share_display,
         run_as_uid: exec.run_as_uid,
+        devices: exec.devices.clone(),
     };
 
     // Create sync pipe
@@ -225,6 +229,7 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
             .map(Path::new),
         &args.host_mounts,
         args.share_display,
+        &args.devices,
     )?;
 
     // pivot_root
@@ -245,7 +250,24 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
     if let Some(uid) = args.run_as_uid
         && got_multi_uid
     {
-        nix::unistd::setgid(nix::unistd::Gid::from_raw(uid))
+        let gid = nix::unistd::Gid::from_raw(uid);
+
+        if args.devices.is_empty() {
+            // No device mounts: load supplementary groups from the rootfs
+            // /etc/group. Non-fatal if it fails.
+            let username = std::ffi::CString::new("sandbox").unwrap();
+            if let Err(e) = nix::unistd::initgroups(&username, gid) {
+                eprintln!("warning: initgroups failed: {e}");
+            }
+        }
+        // When devices are mounted (GPU passthrough), we intentionally skip
+        // initgroups to preserve the host user's supplementary groups
+        // (e.g. render GID 993). The namespace GID map doesn't include
+        // these host GIDs, so sandbox-side groups set by the GPU plugin
+        // map to wrong host GIDs. Inheriting host groups is the only way
+        // to access bind-mounted device nodes.
+
+        nix::unistd::setgid(gid)
             .map_err(|e| IsolaError::NamespaceError(format!("setgid({uid}) failed: {e}")))?;
         nix::unistd::setuid(nix::unistd::Uid::from_raw(uid))
             .map_err(|e| IsolaError::NamespaceError(format!("setuid({uid}) failed: {e}")))?;
@@ -326,6 +348,7 @@ pub fn spawn_sandbox(exec: SandboxExec) -> Result<SandboxChild, IsolaError> {
         host_mounts: exec.host_mounts.clone(),
         share_display: exec.share_display,
         run_as_uid: exec.run_as_uid,
+        devices: exec.devices.clone(),
     };
 
     let (pipe_read, pipe_write) = nix::unistd::pipe()

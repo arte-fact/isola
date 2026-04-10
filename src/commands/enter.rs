@@ -4,12 +4,23 @@ use crate::error::IsolaError;
 use crate::sandbox::backend;
 use crate::sandbox::config::SandboxConfig;
 
-pub fn run(name: &str, workspace: Option<PathBuf>) -> Result<i32, IsolaError> {
+pub fn run(
+    name: &str,
+    workspace: Option<PathBuf>,
+    cli_devices: Vec<String>,
+) -> Result<i32, IsolaError> {
     let config = SandboxConfig::load(name)?;
     let workspace = workspace.or(config.workspace);
 
+    let mut devices = collect_devices(&config.environments, &config.devices);
+    for d in cli_devices {
+        if !devices.contains(&d) {
+            devices.push(d);
+        }
+    }
+
     let b = backend::create_backend();
-    b.enter_interactive(name, false, workspace.as_deref())
+    b.enter_interactive(name, false, workspace.as_deref(), devices)
 }
 
 /// Collect host_mount entries from the given environments' plugins.
@@ -31,6 +42,23 @@ pub fn collect_host_mounts(environments: &[String]) -> Vec<(String, String, bool
                 .map(|m| (m.from.clone(), m.to.clone(), m.readonly))
         })
         .collect()
+}
+
+/// Collect device entries from plugins and sandbox config.
+pub fn collect_devices(environments: &[String], config_devices: &[String]) -> Vec<String> {
+    let mut devices: Vec<String> = config_devices.to_vec();
+    if let Ok(registry) = crate::plugin::PluginRegistry::load() {
+        for env in environments {
+            if let Some(plugin) = registry.get(env) {
+                for d in &plugin.manifest.paths.device {
+                    if !devices.contains(&d.path) {
+                        devices.push(d.path.clone());
+                    }
+                }
+            }
+        }
+    }
+    devices
 }
 
 /// Enter sandbox to run a command with captured stdout+stderr (used by progress UI).
@@ -57,6 +85,7 @@ pub fn run_command_captured(
         run_as_uid: None,
         multi_uid: true,
         capture_output: true,
+        devices: vec![],
     };
 
     crate::sandbox::linux::namespace::spawn_sandbox(exec)
@@ -83,6 +112,7 @@ pub fn run_command(name: &str, command: &str) -> Result<i32, IsolaError> {
         run_as_uid: None,
         multi_uid: true,
         capture_output: false,
+        devices: vec![],
     };
 
     crate::sandbox::linux::namespace::enter_sandbox(exec)

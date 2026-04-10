@@ -106,6 +106,7 @@ impl SandboxBackend for LinuxBackend {
         name: &str,
         _shell: bool,
         workspace: Option<&Path>,
+        devices: Vec<String>,
     ) -> Result<i32, IsolaError> {
         let rootfs = paths::rootfs_dir(name);
         if !rootfs.exists() {
@@ -139,6 +140,7 @@ impl SandboxBackend for LinuxBackend {
             run_as_uid: Some(1000u32),
             multi_uid: true,
             capture_output: false,
+            devices,
         };
 
         enter_sandbox(exec)
@@ -163,6 +165,7 @@ impl SandboxBackend for LinuxBackend {
             run_as_uid: None,
             multi_uid: true,
             capture_output: false,
+            devices: vec![],
         };
 
         enter_sandbox(exec)
@@ -173,6 +176,7 @@ impl SandboxBackend for LinuxBackend {
         name: &str,
         command: &[String],
         workspace: Option<&Path>,
+        devices: Vec<String>,
     ) -> Result<i32, IsolaError> {
         let rootfs = paths::rootfs_dir(name);
         if !rootfs.exists() {
@@ -208,6 +212,7 @@ impl SandboxBackend for LinuxBackend {
             run_as_uid: Some(1000),
             multi_uid: true,
             capture_output: false,
+            devices,
         };
 
         enter_sandbox(exec)
@@ -243,6 +248,7 @@ impl SandboxBackend for LinuxBackend {
                 run_as_uid: None,
                 multi_uid: true,
                 capture_output: false,
+                devices: vec![],
             };
             if let Err(e) = enter_sandbox(exec) {
                 eprintln!("warning: in-sandbox cleanup failed: {e}");

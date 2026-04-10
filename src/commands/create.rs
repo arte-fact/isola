@@ -115,6 +115,7 @@ fn run_macos(
         environments: environments.to_vec(),
         share_display,
         shell: shell.clone(),
+        devices: vec![],
     };
     config.save()?;
 
@@ -202,7 +203,7 @@ fn run_linux(
 
             let child = crate::commands::enter::run_command_captured(name, &script)?;
             let (exit_code, last_lines) =
-                progress::monitor_provisioning(child, &progress, std::slice::from_ref(layer_name))?;
+                progress::monitor_provisioning(child, &progress, &script)?;
             if exit_code != 0 {
                 progress.finish_error(exit_code, &last_lines);
                 return Err(IsolaError::ProvisionFailed(exit_code));
@@ -278,8 +279,7 @@ fn run_linux(
         progress.start_provision();
         let script = rootfs::build_provision_script(environments, shell, registry);
         let child = crate::commands::enter::run_command_captured(name, &script)?;
-        let (exit_code, last_lines) =
-            progress::monitor_provisioning(child, &progress, environments)?;
+        let (exit_code, last_lines) = progress::monitor_provisioning(child, &progress, &script)?;
 
         if exit_code != 0 {
             progress.finish_error(exit_code, &last_lines);
@@ -333,6 +333,7 @@ fn save_config(
         environments: environments.to_vec(),
         share_display,
         shell: shell.clone(),
+        devices: vec![],
     };
     config.save()
 }
