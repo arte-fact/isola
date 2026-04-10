@@ -129,7 +129,9 @@ pub fn run() -> Result<(), IsolaError> {
     let selected_user = if !user_plugins.is_empty() {
         MultiSelect::new("User setup — import from host:", user_plugins)
             .with_default(&user_defaults)
-            .with_help_message("Space to toggle, Enter to confirm — pre-selected = detected on host")
+            .with_help_message(
+                "Space to toggle, Enter to confirm — pre-selected = detected on host",
+            )
             .prompt()
             .map_err(|e| IsolaError::ConfigError(e.to_string()))?
     } else {
@@ -190,6 +192,7 @@ pub fn run() -> Result<(), IsolaError> {
             environments: Some(env_ids.clone()),
             shell: Some(shell.clone()),
             share_display: if share_display { Some(true) } else { None },
+            devices: None,
         };
         local.save(&workspace_path)?;
         eprintln!("Saved .isola/config.yaml — commit to share sandbox config with your team.");
@@ -197,7 +200,7 @@ pub fn run() -> Result<(), IsolaError> {
 
     // 9. Enter the sandbox
     eprintln!("Launching {}...", shell.name());
-    let code = crate::commands::enter::run(&name, None)?;
+    let code = crate::commands::enter::run(&name, None, vec![])?;
     crate::reset_terminal();
     std::process::exit(code);
 }

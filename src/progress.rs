@@ -286,26 +286,24 @@ impl DownloadProgress {
     }
 }
 
-/// Count expected provisioning phases based on the `>>>` echo markers.
-pub fn count_provision_phases(environments: &[String]) -> usize {
-    let mut count = 3;
-    for env in environments {
-        match env.as_str() {
-            "rust" | "nodejs" | "python-uv" | "go" => count += 1,
-            _ => {}
-        }
-    }
-    count += 2; // creating sandbox user + verifying
-    count
+/// Count expected provisioning phases by counting `>>> ` markers in the script.
+pub fn count_provision_phases(script: &str) -> usize {
+    script
+        .lines()
+        .filter(|l| {
+            let t = l.trim_start();
+            t.starts_with("echo \">>> ") || t.starts_with("echo '>>> ")
+        })
+        .count()
 }
 
 /// Read piped provisioning output, update progress, return exit code.
 pub fn monitor_provisioning(
     child: SandboxChild,
     progress: &CreationProgress,
-    environments: &[String],
+    script: &str,
 ) -> Result<(i32, Vec<String>), IsolaError> {
-    let total = count_provision_phases(environments);
+    let total = count_provision_phases(script);
     let mut current_phase = 0;
     let mut last_lines: Vec<String> = Vec::new();
 
@@ -366,31 +364,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn count_phases_empty_envs() {
-        assert_eq!(count_provision_phases(&[]), 5); // 3 base + 2 (user + verify)
+    fn count_phases_from_script() {
+        let script = r#"
+echo ">>> Step one..."
+echo ">>> Step two..."
+echo ">>> Step three..."
+"#;
+        assert_eq!(count_provision_phases(script), 3);
     }
 
     #[test]
-    fn count_phases_known_envs() {
-        let envs = vec!["rust".into(), "nodejs".into()];
-        assert_eq!(count_provision_phases(&envs), 7); // 5 + 2
+    fn count_phases_ignores_non_markers() {
+        let script = r#"
+echo ">>> Step one..."
+echo "not a marker"
+# echo ">>> commented out"
+echo ">>> Step two..."
+"#;
+        assert_eq!(count_provision_phases(script), 2);
     }
 
     #[test]
-    fn count_phases_unknown_env_ignored() {
-        let envs = vec!["rust".into(), "unknown-env".into()];
-        assert_eq!(count_provision_phases(&envs), 6); // 5 + 1 (only rust)
-    }
-
-    #[test]
-    fn count_phases_all_envs() {
-        let envs = vec![
-            "rust".into(),
-            "nodejs".into(),
-            "python-uv".into(),
-            "go".into(),
-        ];
-        assert_eq!(count_provision_phases(&envs), 9); // 5 + 4
+    fn count_phases_empty_script() {
+        assert_eq!(count_provision_phases(""), 0);
     }
 
     #[test]

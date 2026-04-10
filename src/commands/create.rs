@@ -21,14 +21,13 @@ pub fn run(name: &str, workspace: Option<PathBuf>, no_cache: bool) -> Result<(),
 
     // Auto-add user-layer plugins whose host path is detected (e.g. claude-config, ssh-keys)
     for p in registry.plugins_for_layer(PluginLayer::User) {
-        if let Some(ref ad) = p.manifest.auto_detect {
-            if home
+        if let Some(ref ad) = p.manifest.auto_detect
+            && home
                 .as_ref()
                 .map(|h| h.join(&ad.host_path).exists())
                 .unwrap_or(false)
-            {
-                envs.push(p.manifest.name.clone());
-            }
+        {
+            envs.push(p.manifest.name.clone());
         }
     }
 
@@ -118,17 +117,11 @@ pub fn run_with_envs(
             progress.start_step(&format!("Provisioning {layer_name}..."));
 
             // Save config early so run_command_captured can find the sandbox
-            save_config(
-                name,
-                &workspace,
-                environments,
-                share_display,
-                shell,
-            )?;
+            save_config(name, &workspace, environments, share_display, shell)?;
 
             let child = crate::commands::enter::run_command_captured(name, &script)?;
             let (exit_code, last_lines) =
-                progress::monitor_provisioning(child, &progress, std::slice::from_ref(layer_name))?;
+                progress::monitor_provisioning(child, &progress, &script)?;
             if exit_code != 0 {
                 progress.finish_error(exit_code, &last_lines);
                 return Err(IsolaError::ProvisionFailed(exit_code));
@@ -171,13 +164,7 @@ pub fn run_with_envs(
     progress.finish_step("Configured rootfs");
 
     // Save config (may already exist from partial layer build, save again to ensure latest)
-    save_config(
-        name,
-        &workspace,
-        environments,
-        share_display,
-        shell,
-    )?;
+    save_config(name, &workspace, environments, share_display, shell)?;
 
     if used_layered_cache {
         // Layered path: fix ownership + set up PATH
@@ -210,8 +197,7 @@ pub fn run_with_envs(
         progress.start_provision();
         let script = rootfs::build_provision_script(environments, shell, registry);
         let child = crate::commands::enter::run_command_captured(name, &script)?;
-        let (exit_code, last_lines) =
-            progress::monitor_provisioning(child, &progress, environments)?;
+        let (exit_code, last_lines) = progress::monitor_provisioning(child, &progress, &script)?;
 
         if exit_code != 0 {
             progress.finish_error(exit_code, &last_lines);
@@ -262,6 +248,7 @@ fn save_config(
         environments: environments.to_vec(),
         share_display,
         shell: shell.clone(),
+        devices: vec![],
     };
     config.save()
 }

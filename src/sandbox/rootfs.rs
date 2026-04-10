@@ -92,19 +92,7 @@ pub fn build_provision_script(
     // Base packages (always)
     script.push_str(PROVISION_BASE);
 
-    // Selected environments (from plugins; shell plugins run here too; config-only plugins skipped)
-    for env in environments {
-        if let Some(plugin) = registry.get(env) {
-            if let Some(ref install_script) = plugin.install_script {
-                script.push('\n');
-                script.push_str(install_script);
-            }
-        } else {
-            eprintln!("warning: unknown environment '{env}', skipping");
-        }
-    }
-
-    // Create sandbox user (always)
+    // Create sandbox user before plugins (some plugins like gpu need usermod)
     script.push_str(&format!(
         r#"
 echo ">>> Creating sandbox user..."
@@ -133,6 +121,18 @@ chown 1000:1000 /run/user/1000
 chmod 700 /run/user/0 /run/user/1000
 "#,
     );
+
+    // Selected environments (from plugins; shell plugins run here too; config-only plugins skipped)
+    for env in environments {
+        if let Some(plugin) = registry.get(env) {
+            if let Some(ref install_script) = plugin.install_script {
+                script.push('\n');
+                script.push_str(install_script);
+            }
+        } else {
+            eprintln!("warning: unknown environment '{env}', skipping");
+        }
+    }
 
     // Copy tools to sandbox user (from plugin paths.copy)
     let mut path_parts = Vec::new();
@@ -1021,6 +1021,19 @@ mod tests {
         let status = check_layer_cache(&envs, &SandboxShell::Bash, &r);
         let total = status.cached.len() + status.uncached.len();
         assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn provision_script_creates_user_before_plugins() {
+        let r = registry();
+        let envs = vec!["gpu".to_string()];
+        let script = build_provision_script(&envs, &SandboxShell::Bash, &r);
+        let user_pos = script.find("Creating sandbox user").unwrap();
+        let gpu_pos = script.find("Setting up GPU access").unwrap();
+        assert!(
+            user_pos < gpu_pos,
+            "sandbox user must be created before GPU plugin runs"
+        );
     }
 
     #[test]

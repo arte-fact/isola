@@ -48,8 +48,7 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
 
         progress.start_step(&format!("Provisioning {layer_name}..."));
         let child = crate::commands::enter::run_command_captured(name, &script)?;
-        let (exit_code, last_lines) =
-            progress::monitor_provisioning(child, &progress, std::slice::from_ref(layer_name))?;
+        let (exit_code, last_lines) = progress::monitor_provisioning(child, &progress, &script)?;
         if exit_code != 0 {
             progress.finish_error(exit_code, &last_lines);
             return Err(IsolaError::ProvisionFailed(exit_code));

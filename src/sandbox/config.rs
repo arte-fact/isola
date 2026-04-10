@@ -75,6 +75,9 @@ pub struct SandboxConfig {
     pub share_display: bool,
     #[serde(default)]
     pub shell: SandboxShell,
+    /// Device nodes to bind-mount from host (e.g., "/dev/kfd", "/dev/dri").
+    #[serde(default)]
+    pub devices: Vec<String>,
 }
 
 impl SandboxConfig {
@@ -103,6 +106,9 @@ pub struct LocalConfig {
     pub shell: Option<SandboxShell>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub share_display: Option<bool>,
+    /// Device nodes to bind-mount from host (e.g., "/dev/kfd", "/dev/dri").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub devices: Option<Vec<String>>,
 }
 
 impl LocalConfig {
@@ -163,6 +169,7 @@ mod tests {
             environments: vec!["rust".to_string(), "nodejs".to_string()],
             share_display: false,
             shell: SandboxShell::Fish,
+            devices: vec![],
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
@@ -240,6 +247,7 @@ mod tests {
             environments: Some(vec!["rust".to_string(), "nodejs".to_string()]),
             shell: Some(SandboxShell::Fish),
             share_display: None,
+            devices: None,
         };
 
         let yaml = serde_yaml::to_string(&config).unwrap();
@@ -286,6 +294,7 @@ mod tests {
             environments: Some(vec!["go".to_string()]),
             shell: Some(SandboxShell::Zsh),
             share_display: None,
+            devices: None,
         };
 
         config.save(&dir).unwrap();

@@ -5,12 +5,13 @@ use crate::paths;
 use crate::sandbox::config::SandboxConfig;
 use crate::sandbox::namespace::{SandboxExec, enter_sandbox};
 
-use super::enter::{build_env_vars, collect_host_mounts};
+use super::enter::{build_env_vars, collect_devices, collect_host_mounts};
 
 pub fn run(
     name: &str,
     command: Vec<String>,
     workspace: Option<PathBuf>,
+    cli_devices: Vec<String>,
 ) -> Result<i32, IsolaError> {
     let rootfs = paths::rootfs_dir(name);
     if !rootfs.exists() {
@@ -25,6 +26,12 @@ pub fn run(
     }
 
     let host_mounts = collect_host_mounts(&config.environments);
+    let mut devices = collect_devices(&config.environments, &config.devices);
+    for d in cli_devices {
+        if !devices.contains(&d) {
+            devices.push(d);
+        }
+    }
     let exec_path = command[0].clone();
     let exec_args = command.clone();
     let mut env_vars = build_env_vars(true);
@@ -49,6 +56,7 @@ pub fn run(
         run_as_uid: Some(1000),
         multi_uid: true,
         capture_output: false,
+        devices,
     };
 
     enter_sandbox(exec)

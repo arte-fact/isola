@@ -36,7 +36,11 @@ fn main() {
             workspace,
             no_cache,
         }) => commands::create::run(&name, workspace, no_cache),
-        Some(Commands::Enter { name, workspace }) => match commands::enter::run(&name, workspace) {
+        Some(Commands::Enter {
+            name,
+            workspace,
+            device,
+        }) => match commands::enter::run(&name, workspace, device) {
             Ok(code) => {
                 reset_terminal();
                 std::process::exit(code);
@@ -53,7 +57,7 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            match commands::enter::run(&name, None) {
+            match commands::enter::run(&name, None, vec![]) {
                 Ok(code) => {
                     reset_terminal();
                     std::process::exit(code);
@@ -64,8 +68,9 @@ fn main() {
         Some(Commands::Exec {
             name,
             workspace,
+            device,
             command,
-        }) => match commands::exec::run(&name, command, workspace) {
+        }) => match commands::exec::run(&name, command, workspace, device) {
             Ok(code) => {
                 reset_terminal();
                 std::process::exit(code);

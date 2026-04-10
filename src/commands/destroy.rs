@@ -38,6 +38,7 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
             run_as_uid: None,
             multi_uid: true,
             capture_output: false,
+            devices: vec![],
         };
         if let Err(e) = enter_sandbox(exec) {
             eprintln!("warning: in-sandbox cleanup failed: {e}");
