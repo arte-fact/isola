@@ -459,6 +459,14 @@ pub fn ensure_rootfs_has_bash(rootfs: &Path) -> Result<(), IsolaError> {
     )))
 }
 
+/// Recursively copy `src` into `dst`, preserving symlinks verbatim.
+///
+/// User config dirs (e.g. fish, omf, nvim) routinely contain symlinks — some
+/// of them dangling on the host. `fs::copy` follows symlinks and ENOENT's on
+/// broken ones; `Path::is_dir` also follows and misclassifies them. Inspect
+/// `symlink_metadata` instead and recreate symlinks as-is so broken links
+/// come along silently (they resolved on the host, or didn't, same deal
+/// inside the sandbox).
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), IsolaError> {
     std::fs::create_dir_all(dst).io_ctx("create dir", dst)?;
     let read = std::fs::read_dir(src).io_ctx("read dir", src)?;
@@ -466,7 +474,14 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), IsolaError> {
         let entry = entry.io_ctx("read dir entry", src)?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
+        let meta = std::fs::symlink_metadata(&src_path).io_ctx("stat", &src_path)?;
+        let ft = meta.file_type();
+        if ft.is_symlink() {
+            let target = std::fs::read_link(&src_path).io_ctx("readlink", &src_path)?;
+            // Ensure we can write the link even if something already exists there.
+            let _ = std::fs::remove_file(&dst_path);
+            std::os::unix::fs::symlink(&target, &dst_path).io_ctx("symlink", &dst_path)?;
+        } else if ft.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
             std::fs::copy(&src_path, &dst_path).io_ctx("copy", &src_path)?;
@@ -1218,6 +1233,49 @@ mod tests {
         let err = ensure_rootfs_has_bash(tmp.path()).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("no working /bin/bash"), "got: {msg}");
+    }
+
+    #[test]
+    fn copy_dir_recursive_preserves_broken_symlinks() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        std::fs::create_dir_all(src.join("functions")).unwrap();
+        // Regular file: should copy as a regular file.
+        std::fs::write(src.join("functions/real.fish"), b"echo hi\n").unwrap();
+        // Broken symlink: target does not exist — real-world case is
+        // ~/.config/fish/functions/fzf_key_bindings.fish pointing at a
+        // package-manager-installed file that's since been removed.
+        symlink(
+            "/nonexistent/fzf_key_bindings.fish",
+            src.join("functions/broken.fish"),
+        )
+        .unwrap();
+        // Valid symlink to a sibling file.
+        symlink("real.fish", src.join("functions/alias.fish")).unwrap();
+
+        copy_dir_recursive(&src, &dst).expect("broken symlinks must not fail the copy");
+
+        let broken = dst.join("functions/broken.fish");
+        let broken_meta = std::fs::symlink_metadata(&broken).unwrap();
+        assert!(
+            broken_meta.file_type().is_symlink(),
+            "broken link must be preserved as a symlink, not dereferenced"
+        );
+        assert!(!broken.exists(), "broken link must remain dangling");
+
+        let alias = dst.join("functions/alias.fish");
+        assert!(
+            std::fs::symlink_metadata(&alias)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+        );
+        assert!(alias.exists(), "valid symlink must resolve");
+
+        let real = dst.join("functions/real.fish");
+        assert!(real.is_file());
     }
 
     #[test]
