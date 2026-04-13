@@ -442,6 +442,23 @@ pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), IsolaError> {
     Ok(())
 }
 
+/// Verify that a rootfs contains a working `/bin/bash`. Provisioning and
+/// `run_command_captured` exec `/bin/bash` directly; a missing or unresolvable
+/// path surfaces as a cryptic `execve failed: ENOENT` inside the child. Call
+/// this after every `extract_rootfs` to fail fast with a clear message.
+pub fn ensure_rootfs_has_bash(rootfs: &Path) -> Result<(), IsolaError> {
+    let bash = rootfs.join("bin/bash");
+    if bash.exists() {
+        return Ok(());
+    }
+    Err(IsolaError::ExtractionFailed(format!(
+        "rootfs at {} has no working /bin/bash after extraction — the cached \
+         layer tarball is likely truncated (e.g. a prior caching step failed \
+         partway). Try: rm -rf ~/.isola/cache/layers && re-run with --no-cache",
+        rootfs.display(),
+    )))
+}
+
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), IsolaError> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
@@ -696,6 +713,18 @@ impl LayerCacheStatus {
     pub fn all_cached(&self) -> bool {
         self.uncached.is_empty()
     }
+
+    /// Env layers are diffs captured on top of a provisioned base (no /bin/bash
+    /// of their own). If base is uncached — e.g. the shell differs from a
+    /// prior sandbox, since only base layers are keyed by shell — the cached
+    /// env diffs can't stand on their own and must be rebuilt too.
+    fn invalidate_envs_if_base_missing(&mut self) {
+        if self.uncached.iter().any(|n| n == "base") {
+            for (name, _) in self.cached.drain(..) {
+                self.uncached.push(name);
+            }
+        }
+    }
 }
 
 /// Compute the script text used for a layer's version hash.
@@ -737,7 +766,9 @@ pub fn check_layer_cache(
         }
     }
 
-    LayerCacheStatus { cached, uncached }
+    let mut status = LayerCacheStatus { cached, uncached };
+    status.invalidate_envs_if_base_missing();
+    status
 }
 
 /// Build a fixup script that sets up combined PATH for all environments and fixes ownership.
@@ -791,21 +822,41 @@ pub fn cache_base_layer(name: &str, shell: &SandboxShell) -> Result<PathBuf, Iso
     let cache_path = paths::layer_cache_path("base", &hash, shell.name());
 
     std::fs::create_dir_all(paths::layers_cache_dir())?;
-
-    let file = std::fs::File::create(&cache_path)?;
-    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
-    let mut builder = tar::Builder::new(encoder);
-    builder.follow_symlinks(false);
-    builder
-        .append_dir_all(".", &rootfs_path)
-        .map_err(|e| IsolaError::ExtractionFailed(format!("base layer cache: {e}")))?;
-    builder
-        .into_inner()
-        .map_err(|e| IsolaError::ExtractionFailed(format!("base layer finalize: {e}")))?
-        .finish()
-        .map_err(|e| IsolaError::ExtractionFailed(format!("base layer compress: {e}")))?;
-
+    write_rootfs_tarball(&rootfs_path, &cache_path)?;
     Ok(cache_path)
+}
+
+/// Write `rootfs_path` as a gzipped tarball at `dest`. Uses a sibling `.partial`
+/// file and renames on success; on failure the partial is removed so a
+/// corrupt tarball never shows up as a valid cache entry.
+fn write_rootfs_tarball(rootfs_path: &Path, dest: &Path) -> Result<(), IsolaError> {
+    let partial = dest.with_extension("partial");
+    let result = (|| -> Result<(), IsolaError> {
+        let file = std::fs::File::create(&partial)?;
+        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        builder.follow_symlinks(false);
+        builder
+            .append_dir_all(".", rootfs_path)
+            .map_err(|e| IsolaError::ExtractionFailed(format!("base layer cache: {e}")))?;
+        builder
+            .into_inner()
+            .map_err(|e| IsolaError::ExtractionFailed(format!("base layer finalize: {e}")))?
+            .finish()
+            .map_err(|e| IsolaError::ExtractionFailed(format!("base layer compress: {e}")))?;
+        Ok(())
+    })();
+
+    match result {
+        Ok(()) => {
+            std::fs::rename(&partial, dest)?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&partial);
+            Err(e)
+        }
+    }
 }
 
 /// Move the layer tarball created inside the sandbox to the cache directory.
@@ -1034,6 +1085,176 @@ mod tests {
             user_pos < gpu_pos,
             "sandbox user must be created before GPU plugin runs"
         );
+    }
+
+    #[test]
+    fn extract_rootfs_preserves_usrmerge_bin_symlink() {
+        // Ubuntu 24.04 rootfs has `bin -> usr/bin` (usrmerge). The tarball
+        // declares `bin` as a symlink and `usr/bin/bash` as a file. Extraction
+        // must create both so `<root>/bin/bash` resolves.
+        use flate2::write::GzEncoder;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let tar_path = tmp.path().join("tiny-rootfs.tar.gz");
+
+        // Build a minimal tarball that mimics usrmerge ordering.
+        {
+            let file = std::fs::File::create(&tar_path).unwrap();
+            let encoder = GzEncoder::new(file, flate2::Compression::fast());
+            let mut builder = tar::Builder::new(encoder);
+
+            // ./bin -> usr/bin (symlink, appearing before usr)
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_path("bin").unwrap();
+            header.set_link_name("usr/bin").unwrap();
+            header.set_size(0);
+            header.set_mode(0o777);
+            header.set_cksum();
+            builder.append(&header, std::io::empty()).unwrap();
+
+            // ./usr/bin/bash (file)
+            let bash_bytes = b"#!/placeholder\n";
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_path("usr/bin/bash").unwrap();
+            header.set_size(bash_bytes.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append(&header, std::io::Cursor::new(bash_bytes))
+                .unwrap();
+
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+
+        let out = tmp.path().join("out");
+        extract_rootfs(&tar_path, &out).unwrap();
+
+        let bin = out.join("bin");
+        assert!(
+            bin.symlink_metadata().unwrap().file_type().is_symlink(),
+            "expected {} to be a symlink",
+            bin.display()
+        );
+        assert!(
+            out.join("usr/bin/bash").exists(),
+            "expected usr/bin/bash to exist"
+        );
+        assert!(
+            bin.join("bash").exists(),
+            "expected bin/bash to resolve via symlink"
+        );
+
+        // Also write via append_dir_all (same codepath as cache_base_layer)
+        // and re-extract — this catches bugs where our tar WRITING drops the
+        // symlink entry.
+        let recached = tmp.path().join("recached.tar.gz");
+        let file = std::fs::File::create(&recached).unwrap();
+        let encoder = GzEncoder::new(file, flate2::Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        builder.follow_symlinks(false);
+        builder.append_dir_all(".", &out).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let out2 = tmp.path().join("out2");
+        extract_rootfs(&recached, &out2).unwrap();
+        assert!(
+            out2.join("bin")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "after round-trip, bin must still be a symlink"
+        );
+        assert!(
+            out2.join("bin/bash").exists(),
+            "after round-trip, bin/bash must resolve"
+        );
+    }
+
+    #[test]
+    fn ensure_rootfs_has_bash_ok_when_bash_resolves_via_symlink() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("usr/bin")).unwrap();
+        std::fs::write(root.join("usr/bin/bash"), b"#!/x\n").unwrap();
+        symlink("usr/bin", root.join("bin")).unwrap();
+        ensure_rootfs_has_bash(root).unwrap();
+    }
+
+    #[test]
+    fn ensure_rootfs_has_bash_errors_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = ensure_rootfs_has_bash(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no working /bin/bash"), "got: {msg}");
+    }
+
+    #[test]
+    fn write_rootfs_tarball_removes_partial_on_failure() {
+        use std::fs::Permissions;
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("usr/bin")).unwrap();
+        let unreadable = src.join("usr/bin/bash");
+        std::fs::write(&unreadable, b"dummy").unwrap();
+        // Mode 000 simulates a file that the host user can't read — the same
+        // condition that bit us when provisioning left files owned by an
+        // unmapped subuid.
+        std::fs::set_permissions(&unreadable, Permissions::from_mode(0o000)).unwrap();
+
+        let dest = tmp.path().join("cache/base.tar.gz");
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+
+        let result = write_rootfs_tarball(&src, &dest);
+
+        // Restore perms so tempdir cleanup works.
+        std::fs::set_permissions(&unreadable, Permissions::from_mode(0o644)).unwrap();
+
+        assert!(result.is_err(), "expected tarball write to fail");
+        assert!(
+            !dest.exists(),
+            "dest tarball must not exist on failure (would poison cache)"
+        );
+        assert!(
+            !dest.with_extension("partial").exists(),
+            ".partial file must be cleaned up on failure"
+        );
+    }
+
+    #[test]
+    fn invalidate_envs_when_base_missing_moves_envs_to_uncached() {
+        let mut status = LayerCacheStatus {
+            cached: vec![
+                ("rust".to_string(), PathBuf::from("/fake/env-rust.tar.gz")),
+                (
+                    "nodejs".to_string(),
+                    PathBuf::from("/fake/env-nodejs.tar.gz"),
+                ),
+            ],
+            uncached: vec!["base".to_string()],
+        };
+        status.invalidate_envs_if_base_missing();
+        assert!(status.cached.is_empty());
+        assert_eq!(status.uncached, vec!["base", "rust", "nodejs"]);
+    }
+
+    #[test]
+    fn invalidate_envs_when_base_cached_keeps_envs_cached() {
+        let mut status = LayerCacheStatus {
+            cached: vec![
+                ("base".to_string(), PathBuf::from("/fake/base.tar.gz")),
+                ("rust".to_string(), PathBuf::from("/fake/env-rust.tar.gz")),
+            ],
+            uncached: vec!["nodejs".to_string()],
+        };
+        status.invalidate_envs_if_base_missing();
+        assert_eq!(status.cached.len(), 2);
+        assert_eq!(status.uncached, vec!["nodejs"]);
     }
 
     #[test]

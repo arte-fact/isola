@@ -84,6 +84,7 @@ pub fn run_with_envs(
         for (_, layer_path) in &status.cached {
             rootfs::extract_rootfs(layer_path, &rootfs_path)?;
         }
+        rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
         progress.finish_step("Extracted cached layers");
         true
     } else if !no_cache
@@ -92,6 +93,7 @@ pub fn run_with_envs(
         // Legacy fallback: monolithic cache exists
         progress.start_step("Extracting cached rootfs...");
         rootfs::extract_rootfs(&cache_path, &rootfs_path)?;
+        rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
         progress.finish_step("Extracted cached rootfs");
         false
     } else if let Some(ref status) = layer_status
@@ -102,6 +104,9 @@ pub fn run_with_envs(
         for (_, layer_path) in &status.cached {
             rootfs::extract_rootfs(layer_path, &rootfs_path)?;
         }
+        // Must check before the uncached loop — run_command_captured execs
+        // /bin/bash, which surfaces a corrupt cache as a cryptic ENOENT.
+        rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
         progress.finish_step("Extracted cached layers");
 
         // Build each uncached layer
@@ -154,6 +159,7 @@ pub fn run_with_envs(
         let tarball = rootfs::ensure_rootfs_cached_with_progress(&progress)?;
         progress.start_step("Extracting rootfs...");
         rootfs::extract_rootfs(&tarball, &rootfs_path)?;
+        rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
         progress.finish_step("Extracted rootfs");
         false
     };
@@ -204,24 +210,18 @@ pub fn run_with_envs(
             return Err(IsolaError::ProvisionFailed(exit_code));
         }
 
-        // Cache as layers for future use
-        progress.start_step("Caching layers...");
-        let mut cached_any = false;
-
-        match rootfs::cache_base_layer(name, shell) {
-            Ok(_) => cached_any = true,
-            Err(e) => eprintln!("  Warning: base layer cache failed: {e}"),
-        }
-
+        // Cache the whole provisioned rootfs for an exact-config rerun. We
+        // deliberately do NOT call cache_base_layer here: the post-provision
+        // rootfs has env layers mixed in, so captured as "base" it would
+        // poison future sandboxes that match the base-layer hash but expect
+        // a pure base. Layered caches are built only via the layered path.
+        progress.start_step("Caching for future use...");
         match rootfs::cache_provisioned_rootfs(name, environments, shell.name()) {
-            Ok(()) => cached_any = true,
-            Err(e) => eprintln!("  Warning: monolithic cache failed: {e}"),
-        }
-
-        if cached_any {
-            progress.finish_step("Cached for future use");
-        } else {
-            progress.finish_step("Cache skipped");
+            Ok(()) => progress.finish_step("Cached for future use"),
+            Err(e) => {
+                eprintln!("  Warning: cache failed: {e}");
+                progress.finish_step("Cache skipped");
+            }
         }
 
         progress.finish_success(environments);
