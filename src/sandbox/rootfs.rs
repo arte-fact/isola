@@ -1,7 +1,7 @@
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use crate::error::IsolaError;
+use crate::error::{IoContext, IsolaError};
 use crate::paths;
 use crate::plugin::PluginRegistry;
 use crate::sandbox::config::SandboxShell;
@@ -223,7 +223,7 @@ pub fn ensure_rootfs_cached_with_progress(
         return Ok(cached_path);
     }
 
-    std::fs::create_dir_all(&cache)?;
+    std::fs::create_dir_all(&cache).io_ctx("create cache dir", &cache)?;
 
     let response = reqwest::blocking::get(ROOTFS_URL)?;
     if !response.status().is_success() {
@@ -237,7 +237,7 @@ pub fn ensure_rootfs_cached_with_progress(
     let mut dl = progress.start_download(total_size);
 
     let mut reader = response;
-    let mut file = std::fs::File::create(&cached_path)?;
+    let mut file = std::fs::File::create(&cached_path).io_ctx("create", &cached_path)?;
     let mut buf = [0u8; 8192];
     let mut downloaded: u64 = 0;
     loop {
@@ -245,7 +245,7 @@ pub fn ensure_rootfs_cached_with_progress(
         if n == 0 {
             break;
         }
-        std::io::Write::write_all(&mut file, &buf[..n])?;
+        std::io::Write::write_all(&mut file, &buf[..n]).io_ctx("write to", &cached_path)?;
         downloaded += n as u64;
         dl.set_position(downloaded);
     }
@@ -295,11 +295,11 @@ fn verify_rootfs_checksum(path: &Path) -> Result<(), IsolaError> {
     };
 
     // Compute SHA256 of downloaded file
-    let mut file = std::fs::File::open(path)?;
+    let mut file = std::fs::File::open(path).io_ctx("open", path)?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 8192];
     loop {
-        let n = file.read(&mut buf)?;
+        let n = file.read(&mut buf).io_ctx("read", path)?;
         if n == 0 {
             break;
         }
@@ -426,18 +426,18 @@ impl Sha256 {
 }
 
 pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), IsolaError> {
-    std::fs::create_dir_all(target)?;
+    std::fs::create_dir_all(target).io_ctx("create rootfs target dir", target)?;
 
-    let file = std::fs::File::open(tarball)?;
+    let file = std::fs::File::open(tarball).io_ctx("open rootfs tarball", tarball)?;
     let decoder = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(decoder);
     archive.set_preserve_permissions(true);
     archive.set_preserve_ownerships(false);
     archive.set_unpack_xattrs(false);
 
-    archive
-        .unpack(target)
-        .map_err(|e| IsolaError::ExtractionFailed(e.to_string()))?;
+    archive.unpack(target).map_err(|e| {
+        IsolaError::ExtractionFailed(format!("{} (tarball: {})", e, tarball.display()))
+    })?;
 
     Ok(())
 }
@@ -460,15 +460,16 @@ pub fn ensure_rootfs_has_bash(rootfs: &Path) -> Result<(), IsolaError> {
 }
 
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), IsolaError> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
+    std::fs::create_dir_all(dst).io_ctx("create dir", dst)?;
+    let read = std::fs::read_dir(src).io_ctx("read dir", src)?;
+    for entry in read {
+        let entry = entry.io_ctx("read dir entry", src)?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
         if src_path.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
-            std::fs::copy(&src_path, &dst_path)?;
+            std::fs::copy(&src_path, &dst_path).io_ctx("copy", &src_path)?;
         }
     }
     Ok(())
@@ -480,28 +481,49 @@ pub fn post_setup_rootfs(
     environments: &[String],
     registry: &PluginRegistry,
 ) -> Result<(), IsolaError> {
-    let host_resolv = std::fs::read_to_string("/etc/resolv.conf")?;
-    std::fs::write(rootfs.join("etc/resolv.conf"), &host_resolv)?;
+    // Inherit DNS from host. `/etc/resolv.conf` is often a symlink into
+    // `/run/systemd/resolve/` — if the target is gone (e.g. resolved is
+    // disabled) read_to_string returns ENOENT. Fall back to a sane default
+    // so sandbox creation doesn't fail on a host-side quirk.
+    let host_resolv = match std::fs::read_to_string("/etc/resolv.conf") {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "warning: /etc/resolv.conf unreadable ({e}); using public DNS fallback in sandbox"
+            );
+            "nameserver 1.1.1.1\nnameserver 8.8.8.8\n".to_string()
+        }
+        Err(e) => {
+            return Err(IsolaError::IoAt {
+                op: "read",
+                path: PathBuf::from("/etc/resolv.conf"),
+                source: e,
+            });
+        }
+    };
+    let resolv_dst = rootfs.join("etc/resolv.conf");
+    std::fs::write(&resolv_dst, &host_resolv).io_ctx("write", &resolv_dst)?;
 
-    std::fs::write(rootfs.join("etc/hostname"), format!("{name}\n"))?;
+    let hostname_dst = rootfs.join("etc/hostname");
+    std::fs::write(&hostname_dst, format!("{name}\n")).io_ctx("write", &hostname_dst)?;
 
+    let hosts_dst = rootfs.join("etc/hosts");
     std::fs::write(
-        rootfs.join("etc/hosts"),
+        &hosts_dst,
         format!("127.0.0.1 localhost {name}\n::1 localhost {name}\n"),
-    )?;
+    )
+    .io_ctx("write", &hosts_dst)?;
 
-    std::fs::create_dir_all(rootfs.join("etc/apt/apt.conf.d"))?;
-    std::fs::write(
-        rootfs.join("etc/apt/apt.conf.d/99sandbox"),
-        "APT::Sandbox::User \"root\";\n",
-    )?;
+    let apt_dir = rootfs.join("etc/apt/apt.conf.d");
+    std::fs::create_dir_all(&apt_dir).io_ctx("create dir", &apt_dir)?;
+    let apt_cfg = apt_dir.join("99sandbox");
+    std::fs::write(&apt_cfg, "APT::Sandbox::User \"root\";\n").io_ctx("write", &apt_cfg)?;
 
     // Configure dpkg for user namespace environment
-    std::fs::create_dir_all(rootfs.join("etc/dpkg/dpkg.cfg.d"))?;
-    std::fs::write(
-        rootfs.join("etc/dpkg/dpkg.cfg.d/01sandbox"),
-        "force-unsafe-io\n",
-    )?;
+    let dpkg_dir = rootfs.join("etc/dpkg/dpkg.cfg.d");
+    std::fs::create_dir_all(&dpkg_dir).io_ctx("create dir", &dpkg_dir)?;
+    let dpkg_cfg = dpkg_dir.join("01sandbox");
+    std::fs::write(&dpkg_cfg, "force-unsafe-io\n").io_ctx("write", &dpkg_cfg)?;
 
     for dir in &[
         "workspace",
@@ -512,7 +534,8 @@ pub fn post_setup_rootfs(
         "tmp",
         "usr/local/bin",
     ] {
-        std::fs::create_dir_all(rootfs.join(dir))?;
+        let d = rootfs.join(dir);
+        std::fs::create_dir_all(&d).io_ctx("create dir", &d)?;
     }
 
     // Copy host files specified by plugins (host_copy)
@@ -528,9 +551,9 @@ pub fn post_setup_rootfs(
                             copy_dir_recursive(&src, &dst)?;
                         } else {
                             if let Some(parent) = dst.parent() {
-                                std::fs::create_dir_all(parent)?;
+                                std::fs::create_dir_all(parent).io_ctx("create dir", parent)?;
                             }
-                            std::fs::copy(&src, &dst)?;
+                            std::fs::copy(&src, &dst).io_ctx("copy", &src)?;
                         }
                     }
                 }
@@ -540,8 +563,10 @@ pub fn post_setup_rootfs(
 
     // Inherit host git identity (best-effort)
     if let Some(gitconfig) = build_host_gitconfig() {
-        std::fs::write(rootfs.join("home/sandbox/.gitconfig"), &gitconfig)?;
-        std::fs::write(rootfs.join("root/.gitconfig"), &gitconfig)?;
+        let sandbox_gc = rootfs.join("home/sandbox/.gitconfig");
+        std::fs::write(&sandbox_gc, &gitconfig).io_ctx("write", &sandbox_gc)?;
+        let root_gc = rootfs.join("root/.gitconfig");
+        std::fs::write(&root_gc, &gitconfig).io_ctx("write", &root_gc)?;
     }
 
     Ok(())
@@ -566,7 +591,7 @@ pub fn cache_provisioned_rootfs(
     let rootfs_path = paths::rootfs_dir(name);
     let cache_path = paths::provision_cache_path(environments, shell);
 
-    let file = std::fs::File::create(&cache_path)?;
+    let file = std::fs::File::create(&cache_path).io_ctx("create cache tarball", &cache_path)?;
     let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
     let mut builder = tar::Builder::new(encoder);
     builder.follow_symlinks(false);
@@ -821,7 +846,8 @@ pub fn cache_base_layer(name: &str, shell: &SandboxShell) -> Result<PathBuf, Iso
     let hash = layer_version_hash(&script);
     let cache_path = paths::layer_cache_path("base", &hash, shell.name());
 
-    std::fs::create_dir_all(paths::layers_cache_dir())?;
+    let layers_dir = paths::layers_cache_dir();
+    std::fs::create_dir_all(&layers_dir).io_ctx("create layers cache dir", &layers_dir)?;
     write_rootfs_tarball(&rootfs_path, &cache_path)?;
     Ok(cache_path)
 }
@@ -832,7 +858,7 @@ pub fn cache_base_layer(name: &str, shell: &SandboxShell) -> Result<PathBuf, Iso
 fn write_rootfs_tarball(rootfs_path: &Path, dest: &Path) -> Result<(), IsolaError> {
     let partial = dest.with_extension("partial");
     let result = (|| -> Result<(), IsolaError> {
-        let file = std::fs::File::create(&partial)?;
+        let file = std::fs::File::create(&partial).io_ctx("create partial tarball", &partial)?;
         let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
         let mut builder = tar::Builder::new(encoder);
         builder.follow_symlinks(false);
@@ -849,7 +875,7 @@ fn write_rootfs_tarball(rootfs_path: &Path, dest: &Path) -> Result<(), IsolaErro
 
     match result {
         Ok(()) => {
-            std::fs::rename(&partial, dest)?;
+            std::fs::rename(&partial, dest).io_ctx("rename partial to final tarball", &partial)?;
             Ok(())
         }
         Err(e) => {
@@ -878,8 +904,10 @@ pub fn cache_env_layer(
     let hash = layer_version_hash(&script);
     let cache_path = paths::layer_cache_path(layer_name, &hash, shell.name());
 
-    std::fs::create_dir_all(paths::layers_cache_dir())?;
-    std::fs::rename(&layer_tar_in_rootfs, &cache_path)?;
+    let layers_dir = paths::layers_cache_dir();
+    std::fs::create_dir_all(&layers_dir).io_ctx("create layers cache dir", &layers_dir)?;
+    std::fs::rename(&layer_tar_in_rootfs, &cache_path)
+        .io_ctx("rename layer tarball into cache", &layer_tar_in_rootfs)?;
 
     Ok(Some(cache_path))
 }

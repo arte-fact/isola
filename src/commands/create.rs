@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use chrono::Utc;
 
-use crate::error::IsolaError;
+use crate::error::{IoContext, IsolaError};
 use crate::paths;
 use crate::plugin::{PluginLayer, PluginRegistry};
 use crate::sandbox::config::{SandboxConfig, SandboxShell};
@@ -67,7 +67,7 @@ pub fn run_with_envs(
     }
 
     let rootfs_path = paths::rootfs_dir(name);
-    std::fs::create_dir_all(&rootfs_path)?;
+    std::fs::create_dir_all(&rootfs_path).io_ctx("create sandbox rootfs dir", &rootfs_path)?;
 
     // Try layered cache first, then legacy monolithic cache, then full provision
     let layer_status = if no_cache {

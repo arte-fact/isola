@@ -91,6 +91,11 @@ fn main() {
 
     if let Err(e) = result {
         eprintln!("error: {e}");
+        let mut source = std::error::Error::source(&e);
+        while let Some(cause) = source {
+            eprintln!("  caused by: {cause}");
+            source = cause.source();
+        }
         std::process::exit(1);
     }
 }
