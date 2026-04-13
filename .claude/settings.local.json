@@ -38,7 +38,10 @@
       "Bash(cargo run:*)",
       "Bash(cargo install:*)",
       "Bash(cargo fmt:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(find:*)",
+      "Bash(cargo build:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
