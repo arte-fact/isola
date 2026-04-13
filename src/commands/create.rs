@@ -135,8 +135,14 @@ pub fn run_with_envs(
             // Cache the layer
             if layer_name == "base" {
                 progress.start_step("Caching base layer...");
-                match rootfs::cache_base_layer(name, shell) {
-                    Ok(_) => progress.finish_step("Cached base layer"),
+                let res = run_cache_script_and_move(
+                    name,
+                    &rootfs::build_base_cache_script(),
+                    &progress,
+                    || rootfs::cache_base_layer(name, shell).map(|_| ()),
+                );
+                match res {
+                    Ok(()) => progress.finish_step("Cached base layer"),
                     Err(e) => progress.finish_step(&format!("Cache skipped: {e}")),
                 }
             } else {
@@ -210,13 +216,21 @@ pub fn run_with_envs(
             return Err(IsolaError::ProvisionFailed(exit_code));
         }
 
-        // Cache the whole provisioned rootfs for an exact-config rerun. We
-        // deliberately do NOT call cache_base_layer here: the post-provision
+        // Cache the whole provisioned rootfs for an exact-config rerun. The
+        // tarball is produced *inside* the sandbox so tar can read files owned
+        // by the mapped sandbox UID (an unmapped subuid from the host's POV).
+        // We deliberately do NOT call cache_base_layer here: the post-provision
         // rootfs has env layers mixed in, so captured as "base" it would
         // poison future sandboxes that match the base-layer hash but expect
         // a pure base. Layered caches are built only via the layered path.
         progress.start_step("Caching for future use...");
-        match rootfs::cache_provisioned_rootfs(name, environments, shell.name()) {
+        let cache_result = run_cache_script_and_move(
+            name,
+            &rootfs::build_provision_cache_script(),
+            &progress,
+            || rootfs::cache_provisioned_rootfs(name, environments, shell.name()),
+        );
+        match cache_result {
             Ok(()) => progress.finish_step("Cached for future use"),
             Err(e) => {
                 eprintln!("  Warning: cache failed: {e}");
@@ -228,6 +242,23 @@ pub fn run_with_envs(
     }
 
     Ok(())
+}
+
+/// Run a cache-tarball script inside the sandbox, then move the resulting
+/// tarball out via `move_out`. Either step failing returns an error so the
+/// caller can downgrade caching to a warning without aborting provisioning.
+fn run_cache_script_and_move(
+    name: &str,
+    script: &str,
+    progress: &crate::progress::CreationProgress,
+    move_out: impl FnOnce() -> Result<(), IsolaError>,
+) -> Result<(), IsolaError> {
+    let child = crate::commands::enter::run_command_captured(name, script)?;
+    let (exit_code, _) = crate::progress::monitor_provisioning(child, progress, script)?;
+    if exit_code != 0 {
+        return Err(IsolaError::ProvisionFailed(exit_code));
+    }
+    move_out()
 }
 
 fn save_config(

@@ -597,29 +597,80 @@ pub fn has_cached_provision(environments: &[String], shell: &str) -> Option<Path
     if path.exists() { Some(path) } else { None }
 }
 
-/// Create a gzipped tarball of the provisioned rootfs for future reuse.
+/// In-sandbox path where the cache scripts deposit their tarballs before we
+/// move them out to the host cache directory.
+const PROVISION_CACHE_FILE: &str = ".provision_cache.tar.gz";
+const BASE_CACHE_FILE: &str = ".base_cache.tar.gz";
+
+/// Build a script that tars the entire rootfs into `/tmp/{out}` from inside
+/// the sandbox.
+///
+/// Provisioning leaves files owned by the in-namespace sandbox user (UID
+/// 1000), which the host sees as an unmapped subuid. A host-side `tar` over
+/// `~/.isola/sandboxes/<name>/rootfs` therefore fails with EACCES on those
+/// files. Running tar inside the sandbox sidesteps that — every file is
+/// readable by the in-namespace root.
+fn build_full_rootfs_cache_script(out: &str) -> String {
+    let stem = out.trim_end_matches(".tar.gz");
+    format!(
+        r#"#!/bin/bash
+set -eo pipefail
+echo ">>> Capturing rootfs cache..."
+rm -f /tmp/{out} /tmp/{stem}.partial
+cd /
+tar czf /tmp/{stem}.partial \
+    --exclude=./proc/* \
+    --exclude=./sys/* \
+    --exclude=./dev/* \
+    --exclude=./tmp/* \
+    --exclude=./run/* \
+    --exclude=./workspace/* \
+    .
+mv /tmp/{stem}.partial /tmp/{out}
+[ -s /tmp/{out} ] || {{ echo "error: cache tarball is empty" >&2; exit 1; }}
+echo "=== Rootfs cache complete ==="
+"#
+    )
+}
+
+/// Script that creates the full-provision cache tarball at
+/// `/tmp/.provision_cache.tar.gz` inside the sandbox.
+pub fn build_provision_cache_script() -> String {
+    build_full_rootfs_cache_script(PROVISION_CACHE_FILE)
+}
+
+/// Script that creates the base-layer cache tarball at
+/// `/tmp/.base_cache.tar.gz` inside the sandbox.
+pub fn build_base_cache_script() -> String {
+    build_full_rootfs_cache_script(BASE_CACHE_FILE)
+}
+
+/// Move a cache tarball produced inside the sandbox to its final host path.
+fn move_cache_tarball(src: &Path, dest: &Path) -> Result<(), IsolaError> {
+    if !src.exists() {
+        return Err(IsolaError::ExtractionFailed(format!(
+            "expected cache tarball at {} but the in-sandbox cache script did not produce it",
+            src.display(),
+        )));
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).io_ctx("create cache dir", parent)?;
+    }
+    std::fs::rename(src, dest).io_ctx("move cache tarball into host cache", src)?;
+    Ok(())
+}
+
+/// Move the full-provision tarball (created by `build_provision_cache_script`)
+/// out of the sandbox into the host cache directory.
 pub fn cache_provisioned_rootfs(
     name: &str,
     environments: &[String],
     shell: &str,
 ) -> Result<(), IsolaError> {
     let rootfs_path = paths::rootfs_dir(name);
-    let cache_path = paths::provision_cache_path(environments, shell);
-
-    let file = std::fs::File::create(&cache_path).io_ctx("create cache tarball", &cache_path)?;
-    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
-    let mut builder = tar::Builder::new(encoder);
-    builder.follow_symlinks(false);
-    builder
-        .append_dir_all(".", &rootfs_path)
-        .map_err(|e| IsolaError::ExtractionFailed(format!("cache tarball: {e}")))?;
-    builder
-        .into_inner()
-        .map_err(|e| IsolaError::ExtractionFailed(format!("cache finalize: {e}")))?
-        .finish()
-        .map_err(|e| IsolaError::ExtractionFailed(format!("cache compress: {e}")))?;
-
-    Ok(())
+    let src = rootfs_path.join("tmp").join(PROVISION_CACHE_FILE);
+    let dest = paths::provision_cache_path(environments, shell);
+    move_cache_tarball(&src, &dest)
 }
 
 /// Minimal script to fix file ownership after extracting a cached provisioned rootfs.
@@ -854,50 +905,16 @@ pub fn build_layered_fixup_script(environments: &[String], registry: &PluginRegi
     script
 }
 
-/// Cache the base layer by tarballing the entire rootfs.
+/// Move the base-layer tarball (created by `build_base_cache_script`) out of
+/// the sandbox into the host layered cache.
 pub fn cache_base_layer(name: &str, shell: &SandboxShell) -> Result<PathBuf, IsolaError> {
     let rootfs_path = paths::rootfs_dir(name);
     let script = build_base_layer_script(shell);
     let hash = layer_version_hash(&script);
     let cache_path = paths::layer_cache_path("base", &hash, shell.name());
-
-    let layers_dir = paths::layers_cache_dir();
-    std::fs::create_dir_all(&layers_dir).io_ctx("create layers cache dir", &layers_dir)?;
-    write_rootfs_tarball(&rootfs_path, &cache_path)?;
+    let src = rootfs_path.join("tmp").join(BASE_CACHE_FILE);
+    move_cache_tarball(&src, &cache_path)?;
     Ok(cache_path)
-}
-
-/// Write `rootfs_path` as a gzipped tarball at `dest`. Uses a sibling `.partial`
-/// file and renames on success; on failure the partial is removed so a
-/// corrupt tarball never shows up as a valid cache entry.
-fn write_rootfs_tarball(rootfs_path: &Path, dest: &Path) -> Result<(), IsolaError> {
-    let partial = dest.with_extension("partial");
-    let result = (|| -> Result<(), IsolaError> {
-        let file = std::fs::File::create(&partial).io_ctx("create partial tarball", &partial)?;
-        let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
-        let mut builder = tar::Builder::new(encoder);
-        builder.follow_symlinks(false);
-        builder
-            .append_dir_all(".", rootfs_path)
-            .map_err(|e| IsolaError::ExtractionFailed(format!("base layer cache: {e}")))?;
-        builder
-            .into_inner()
-            .map_err(|e| IsolaError::ExtractionFailed(format!("base layer finalize: {e}")))?
-            .finish()
-            .map_err(|e| IsolaError::ExtractionFailed(format!("base layer compress: {e}")))?;
-        Ok(())
-    })();
-
-    match result {
-        Ok(()) => {
-            std::fs::rename(&partial, dest).io_ctx("rename partial to final tarball", &partial)?;
-            Ok(())
-        }
-        Err(e) => {
-            let _ = std::fs::remove_file(&partial);
-            Err(e)
-        }
-    }
 }
 
 /// Move the layer tarball created inside the sandbox to the cache directory.
@@ -1189,9 +1206,8 @@ mod tests {
             "expected bin/bash to resolve via symlink"
         );
 
-        // Also write via append_dir_all (same codepath as cache_base_layer)
-        // and re-extract — this catches bugs where our tar WRITING drops the
-        // symlink entry.
+        // Round-trip through tar::Builder::append_dir_all to confirm the tar
+        // crate preserves the usrmerge symlink on write as well as read.
         let recached = tmp.path().join("recached.tar.gz");
         let file = std::fs::File::create(&recached).unwrap();
         let encoder = GzEncoder::new(file, flate2::Compression::fast());
@@ -1279,37 +1295,61 @@ mod tests {
     }
 
     #[test]
-    fn write_rootfs_tarball_removes_partial_on_failure() {
-        use std::fs::Permissions;
-        use std::os::unix::fs::PermissionsExt;
+    fn provision_cache_script_uses_partial_then_rename() {
+        let s = build_provision_cache_script();
+        // Atomic: write to .partial, then mv into place — never leave a
+        // truncated .tar.gz that future runs would treat as a valid cache.
+        assert!(s.contains(".provision_cache.partial"));
+        assert!(s.contains("mv /tmp/.provision_cache.partial /tmp/.provision_cache.tar.gz"));
+        // Fail-fast on any error so a partial tarball doesn't get renamed.
+        assert!(s.contains("set -eo pipefail"));
+    }
 
+    #[test]
+    fn cache_script_excludes_virtual_filesystems_and_workspace() {
+        // /proc /sys /dev /run are kernel virtual fs, /tmp would recurse into
+        // the tarball itself, /workspace is a host bind-mount that must never
+        // end up in the cached image.
+        for s in [build_provision_cache_script(), build_base_cache_script()] {
+            for excl in [
+                "./proc/*",
+                "./sys/*",
+                "./dev/*",
+                "./tmp/*",
+                "./run/*",
+                "./workspace/*",
+            ] {
+                assert!(s.contains(excl), "missing exclusion {excl} in:\n{s}");
+            }
+        }
+    }
+
+    #[test]
+    fn move_cache_tarball_errors_with_clear_message_when_missing() {
         let tmp = tempfile::tempdir().unwrap();
-        let src = tmp.path().join("src");
-        std::fs::create_dir_all(src.join("usr/bin")).unwrap();
-        let unreadable = src.join("usr/bin/bash");
-        std::fs::write(&unreadable, b"dummy").unwrap();
-        // Mode 000 simulates a file that the host user can't read — the same
-        // condition that bit us when provisioning left files owned by an
-        // unmapped subuid.
-        std::fs::set_permissions(&unreadable, Permissions::from_mode(0o000)).unwrap();
+        let src = tmp.path().join("not_there.tar.gz");
+        let dest = tmp.path().join("dest/cache.tar.gz");
 
-        let dest = tmp.path().join("cache/base.tar.gz");
-        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
-
-        let result = write_rootfs_tarball(&src, &dest);
-
-        // Restore perms so tempdir cleanup works.
-        std::fs::set_permissions(&unreadable, Permissions::from_mode(0o644)).unwrap();
-
-        assert!(result.is_err(), "expected tarball write to fail");
+        let err = move_cache_tarball(&src, &dest).unwrap_err();
+        let msg = err.to_string();
         assert!(
-            !dest.exists(),
-            "dest tarball must not exist on failure (would poison cache)"
+            msg.contains("in-sandbox cache script"),
+            "error should explain the missing tarball means the in-sandbox script didn't run; got: {msg}"
         );
-        assert!(
-            !dest.with_extension("partial").exists(),
-            ".partial file must be cleaned up on failure"
-        );
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn move_cache_tarball_renames_into_place_creating_parent_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src.tar.gz");
+        std::fs::write(&src, b"fake-tarball").unwrap();
+        let dest = tmp.path().join("nested/dir/cache.tar.gz");
+
+        move_cache_tarball(&src, &dest).unwrap();
+
+        assert!(!src.exists(), "src should have been moved");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"fake-tarball");
     }
 
     #[test]
