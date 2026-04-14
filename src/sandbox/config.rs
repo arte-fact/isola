@@ -54,6 +54,7 @@ impl SandboxShell {
             .unwrap_or(SandboxShell::Bash)
     }
 
+    #[cfg(target_os = "linux")]
     pub fn login_args(&self) -> Vec<String> {
         match self {
             SandboxShell::Bash => vec!["bash".to_string(), "-l".to_string()],
@@ -225,6 +226,7 @@ mod tests {
         assert_eq!(SandboxShell::Zsh.name(), "zsh");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn shell_login_args() {
         assert_eq!(

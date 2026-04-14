@@ -6,6 +6,7 @@ use inquire::{Confirm, MultiSelect, Select, Text};
 use crate::error::IsolaError;
 use crate::paths;
 use crate::plugin::{PluginLayer, PluginRegistry};
+use crate::sandbox::backend;
 use crate::sandbox::config::{LocalConfig, SandboxShell};
 
 #[derive(Clone)]
@@ -22,7 +23,8 @@ impl fmt::Display for PluginChoice {
 
 /// Interactive setup wizard
 pub fn run() -> Result<(), IsolaError> {
-    crate::commands::create::preflight_checks()?;
+    let b = backend::create_backend();
+    b.preflight_checks()?;
 
     let registry = PluginRegistry::load()?;
 

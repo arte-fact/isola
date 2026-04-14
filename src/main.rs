@@ -3,6 +3,7 @@ mod commands;
 mod error;
 mod paths;
 mod plugin;
+#[cfg(target_os = "linux")]
 mod progress;
 mod sandbox;
 

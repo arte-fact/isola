@@ -33,6 +33,7 @@
       "WebFetch(domain:www.redhat.com)",
       "WebFetch(domain:www.tutorialworks.com)",
       "WebFetch(domain:docs.rs)",
+      "Bash(cargo check:*)",
       "Bash(cargo test:*)",
       "Bash(cargo clippy:*)",
       "Bash(cargo run:*)",
@@ -43,5 +44,10 @@
       "Bash(cargo build:*)",
       "Bash(git commit:*)"
     ]
+  },
+  "sandbox": {
+    "enabled": false,
+    "autoAllowBashIfSandboxed": false,
+    "allowUnsandboxedCommands": false
   }
 }

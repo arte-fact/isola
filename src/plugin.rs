@@ -59,10 +59,12 @@ pub struct PluginPaths {
     /// Files/directories to copy from host $HOME into the sandbox rootfs
     /// before provisioning. `from` is relative to $HOME, `to` is relative
     /// to /home/sandbox/ inside the rootfs.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     #[serde(default)]
     pub host_copy: Vec<CopyEntry>,
     /// Files or directories to bind-mount from host $HOME into the sandbox at
     /// entry time. `from` is relative to $HOME, `to` is relative to /home/sandbox/.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
     #[serde(default)]
     pub host_mount: Vec<MountEntry>,
     /// Device nodes to bind-mount from host into the sandbox /dev.
@@ -77,6 +79,7 @@ pub struct CopyEntry {
     pub to: String,
 }
 
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 #[derive(Debug, Clone, Deserialize)]
 pub struct MountEntry {
     pub from: String,
@@ -160,6 +163,10 @@ const BUNDLED_PLUGINS: &[BundledPlugin] = &[
     BundledPlugin {
         manifest_yaml: include_str!("../plugins/rocm/plugin.yaml"),
         install_script: Some(include_str!("../plugins/rocm/install.sh")),
+    },
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/php/plugin.yaml"),
+        install_script: Some(include_str!("../plugins/php/install.sh")),
     },
     // Shell-layer: installed by shell selection
     BundledPlugin {

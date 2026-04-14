@@ -1,0 +1,10 @@
+name: php
+description: "PHP 8.4 + Composer + Laravel Installer"
+version: "1.0.0"
+layer: project
+provision:
+  script: install.sh
+  verify: "php --version"
+paths:
+  bin: []
+  copy: []

@@ -5,9 +5,9 @@ use std::path::Path;
 
 use nix::libc;
 
+use super::mounts;
+use super::userns;
 use crate::error::IsolaError;
-use crate::sandbox::mounts;
-use crate::sandbox::userns;
 
 fn to_cstring(s: &str, label: &str) -> Result<CString, IsolaError> {
     CString::new(s).map_err(|_| IsolaError::NamespaceError(format!("{label} contains a null byte")))
@@ -430,7 +430,7 @@ fn do_pivot_root(rootfs: &Path) -> Result<(), IsolaError> {
         .map_err(|e| IsolaError::NamespaceError(format!("chdir to / failed: {e}")))?;
 
     nix::mount::umount2("/.old_root", nix::mount::MntFlags::MNT_DETACH)
-        .map_err(IsolaError::MountError)?;
+        .map_err(|e| IsolaError::NamespaceError(format!("umount2 /.old_root failed: {e}")))?;
     std::fs::remove_dir("/.old_root")?;
 
     Ok(())
