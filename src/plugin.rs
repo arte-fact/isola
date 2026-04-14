@@ -160,6 +160,10 @@ const BUNDLED_PLUGINS: &[BundledPlugin] = &[
         manifest_yaml: include_str!("../plugins/rocm/plugin.yaml"),
         install_script: Some(include_str!("../plugins/rocm/install.sh")),
     },
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/php/plugin.yaml"),
+        install_script: Some(include_str!("../plugins/php/install.sh")),
+    },
     // Shell-layer: installed by shell selection
     BundledPlugin {
         manifest_yaml: include_str!("../plugins/fish/plugin.yaml"),

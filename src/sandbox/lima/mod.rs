@@ -302,49 +302,24 @@ impl SandboxBackend for LimaBackend {
         Self::ensure_vm_running(name)?;
         let vm = Self::vm_name(name);
         let env_exports = Self::build_env_exports();
+        let config = crate::sandbox::config::SandboxConfig::load(name)?;
 
-        // Common PATH that covers all typical install locations
         let sandbox_path = "/home/sandbox/.cargo/bin:/home/sandbox/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
         let status = if shell {
-            // Root shell (same as Linux backend: shell mode = root)
             Command::new("limactl")
                 .args(["shell", &vm, "--", "sudo", "-i"])
                 .status()
         } else {
-            // Check if claude is available for the sandbox user
-            let check_cmd = format!("PATH={sandbox_path} command -v claude >/dev/null 2>&1");
-            let has_claude = Command::new("limactl")
+            let shell_bin = config.shell.bin_path();
+            let cmd = format!(
+                "export PATH='{sandbox_path}' && {env_exports}cd /workspace 2>/dev/null; exec {shell_bin} -l"
+            );
+            Command::new("limactl")
                 .args([
-                    "shell", &vm, "--", "sudo", "-u", "sandbox", "bash", "-c", &check_cmd,
+                    "shell", &vm, "--", "sudo", "-u", "sandbox", "-i", "bash", "-c", &cmd,
                 ])
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false);
-
-            if has_claude {
-                let cmd = format!(
-                    "export PATH='{sandbox_path}' && {env_exports}cd /workspace 2>/dev/null; exec claude --dangerously-skip-permissions"
-                );
-                Command::new("limactl")
-                    .args([
-                        "shell", &vm, "--", "sudo", "-u", "sandbox", "-i", "bash", "-c", &cmd,
-                    ])
-                    .status()
-            } else {
-                eprintln!("Warning: Claude binary not found in VM, falling back to shell");
-                eprintln!(
-                    "  Install with: isola shell {name}  then  npm install -g @anthropic-ai/claude-code"
-                );
-                let cmd = format!(
-                    "export PATH='{sandbox_path}' && {env_exports}cd /workspace 2>/dev/null; exec bash"
-                );
-                Command::new("limactl")
-                    .args([
-                        "shell", &vm, "--", "sudo", "-u", "sandbox", "-i", "bash", "-c", &cmd,
-                    ])
-                    .status()
-            }
+                .status()
         };
 
         match status {
