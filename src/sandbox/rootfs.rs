@@ -4,7 +4,7 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 #[cfg(target_os = "linux")]
-use crate::error::IsolaError;
+use crate::error::{IoContext, IsolaError};
 #[cfg(target_os = "linux")]
 use crate::paths;
 use crate::plugin::PluginRegistry;
@@ -347,7 +347,7 @@ pub fn ensure_rootfs_cached_with_progress(
         return Ok(cached_path);
     }
 
-    std::fs::create_dir_all(&cache)?;
+    std::fs::create_dir_all(&cache).io_ctx("create cache dir", &cache)?;
 
     let response = reqwest::blocking::get(ROOTFS_URL)?;
     if !response.status().is_success() {
@@ -361,7 +361,7 @@ pub fn ensure_rootfs_cached_with_progress(
     let mut dl = progress.start_download(total_size);
 
     let mut reader = response;
-    let mut file = std::fs::File::create(&cached_path)?;
+    let mut file = std::fs::File::create(&cached_path).io_ctx("create", &cached_path)?;
     let mut buf = [0u8; 8192];
     let mut downloaded: u64 = 0;
     loop {
@@ -369,7 +369,7 @@ pub fn ensure_rootfs_cached_with_progress(
         if n == 0 {
             break;
         }
-        std::io::Write::write_all(&mut file, &buf[..n])?;
+        std::io::Write::write_all(&mut file, &buf[..n]).io_ctx("write to", &cached_path)?;
         downloaded += n as u64;
         dl.set_position(downloaded);
     }
@@ -420,11 +420,11 @@ fn verify_rootfs_checksum(path: &Path) -> Result<(), IsolaError> {
     };
 
     // Compute SHA256 of downloaded file
-    let mut file = std::fs::File::open(path)?;
+    let mut file = std::fs::File::open(path).io_ctx("open", path)?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 8192];
     loop {
-        let n = file.read(&mut buf)?;
+        let n = file.read(&mut buf).io_ctx("read", path)?;
         if n == 0 {
             break;
         }
@@ -554,33 +554,55 @@ impl Sha256 {
 
 #[cfg(target_os = "linux")]
 pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), IsolaError> {
-    std::fs::create_dir_all(target)?;
+    std::fs::create_dir_all(target).io_ctx("create rootfs target dir", target)?;
 
-    let file = std::fs::File::open(tarball)?;
+    let file = std::fs::File::open(tarball).io_ctx("open rootfs tarball", tarball)?;
     let decoder = flate2::read::GzDecoder::new(file);
     let mut archive = tar::Archive::new(decoder);
     archive.set_preserve_permissions(true);
     archive.set_preserve_ownerships(false);
     archive.set_unpack_xattrs(false);
 
-    archive
-        .unpack(target)
-        .map_err(|e| IsolaError::ExtractionFailed(e.to_string()))?;
+    archive.unpack(target).map_err(|e| {
+        IsolaError::ExtractionFailed(format!("{} (tarball: {})", e, tarball.display()))
+    })?;
 
     Ok(())
 }
 
 #[cfg(target_os = "linux")]
+pub fn ensure_rootfs_has_bash(rootfs: &Path) -> Result<(), IsolaError> {
+    let bash = rootfs.join("bin/bash");
+    if bash.exists() {
+        return Ok(());
+    }
+    Err(IsolaError::ExtractionFailed(format!(
+        "rootfs at {} has no working /bin/bash after extraction — the cached \
+         layer tarball is likely truncated (e.g. a prior caching step failed \
+         partway). Try: rm -rf ~/.isola/cache/layers && re-run with --no-cache",
+        rootfs.display(),
+    )))
+}
+
+#[cfg(target_os = "linux")]
 fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), IsolaError> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
+    std::fs::create_dir_all(dst).io_ctx("create dir", dst)?;
+    let read = std::fs::read_dir(src).io_ctx("read dir", src)?;
+    for entry in read {
+        let entry = entry.io_ctx("read dir entry", src)?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
+        let meta = std::fs::symlink_metadata(&src_path).io_ctx("stat", &src_path)?;
+        let ft = meta.file_type();
+        if ft.is_symlink() {
+            let target = std::fs::read_link(&src_path).io_ctx("readlink", &src_path)?;
+            // Ensure we can write the link even if something already exists there.
+            let _ = std::fs::remove_file(&dst_path);
+            std::os::unix::fs::symlink(&target, &dst_path).io_ctx("symlink", &dst_path)?;
+        } else if ft.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
-            std::fs::copy(&src_path, &dst_path)?;
+            std::fs::copy(&src_path, &dst_path).io_ctx("copy", &src_path)?;
         }
     }
     Ok(())
@@ -593,28 +615,49 @@ pub fn post_setup_rootfs(
     environments: &[String],
     registry: &PluginRegistry,
 ) -> Result<(), IsolaError> {
-    let host_resolv = std::fs::read_to_string("/etc/resolv.conf")?;
-    std::fs::write(rootfs.join("etc/resolv.conf"), &host_resolv)?;
+    // Inherit DNS from host. `/etc/resolv.conf` is often a symlink into
+    // `/run/systemd/resolve/` — if the target is gone (e.g. resolved is
+    // disabled) read_to_string returns ENOENT. Fall back to a sane default
+    // so sandbox creation doesn't fail on a host-side quirk.
+    let host_resolv = match std::fs::read_to_string("/etc/resolv.conf") {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            eprintln!(
+                "warning: /etc/resolv.conf unreadable ({e}); using public DNS fallback in sandbox"
+            );
+            "nameserver 1.1.1.1\nnameserver 8.8.8.8\n".to_string()
+        }
+        Err(e) => {
+            return Err(IsolaError::IoAt {
+                op: "read",
+                path: PathBuf::from("/etc/resolv.conf"),
+                source: e,
+            });
+        }
+    };
+    let resolv_dst = rootfs.join("etc/resolv.conf");
+    std::fs::write(&resolv_dst, &host_resolv).io_ctx("write", &resolv_dst)?;
 
-    std::fs::write(rootfs.join("etc/hostname"), format!("{name}\n"))?;
+    let hostname_dst = rootfs.join("etc/hostname");
+    std::fs::write(&hostname_dst, format!("{name}\n")).io_ctx("write", &hostname_dst)?;
 
+    let hosts_dst = rootfs.join("etc/hosts");
     std::fs::write(
-        rootfs.join("etc/hosts"),
+        &hosts_dst,
         format!("127.0.0.1 localhost {name}\n::1 localhost {name}\n"),
-    )?;
+    )
+    .io_ctx("write", &hosts_dst)?;
 
-    std::fs::create_dir_all(rootfs.join("etc/apt/apt.conf.d"))?;
-    std::fs::write(
-        rootfs.join("etc/apt/apt.conf.d/99sandbox"),
-        "APT::Sandbox::User \"root\";\n",
-    )?;
+    let apt_dir = rootfs.join("etc/apt/apt.conf.d");
+    std::fs::create_dir_all(&apt_dir).io_ctx("create dir", &apt_dir)?;
+    let apt_cfg = apt_dir.join("99sandbox");
+    std::fs::write(&apt_cfg, "APT::Sandbox::User \"root\";\n").io_ctx("write", &apt_cfg)?;
 
     // Configure dpkg for user namespace environment
-    std::fs::create_dir_all(rootfs.join("etc/dpkg/dpkg.cfg.d"))?;
-    std::fs::write(
-        rootfs.join("etc/dpkg/dpkg.cfg.d/01sandbox"),
-        "force-unsafe-io\n",
-    )?;
+    let dpkg_dir = rootfs.join("etc/dpkg/dpkg.cfg.d");
+    std::fs::create_dir_all(&dpkg_dir).io_ctx("create dir", &dpkg_dir)?;
+    let dpkg_cfg = dpkg_dir.join("01sandbox");
+    std::fs::write(&dpkg_cfg, "force-unsafe-io\n").io_ctx("write", &dpkg_cfg)?;
 
     for dir in &[
         "workspace",
@@ -625,7 +668,8 @@ pub fn post_setup_rootfs(
         "tmp",
         "usr/local/bin",
     ] {
-        std::fs::create_dir_all(rootfs.join(dir))?;
+        let d = rootfs.join(dir);
+        std::fs::create_dir_all(&d).io_ctx("create dir", &d)?;
     }
 
     // Copy host files specified by plugins (host_copy)
@@ -641,9 +685,9 @@ pub fn post_setup_rootfs(
                             copy_dir_recursive(&src, &dst)?;
                         } else {
                             if let Some(parent) = dst.parent() {
-                                std::fs::create_dir_all(parent)?;
+                                std::fs::create_dir_all(parent).io_ctx("create dir", parent)?;
                             }
-                            std::fs::copy(&src, &dst)?;
+                            std::fs::copy(&src, &dst).io_ctx("copy", &src)?;
                         }
                     }
                 }
@@ -653,8 +697,10 @@ pub fn post_setup_rootfs(
 
     // Inherit host git identity (best-effort)
     if let Some(gitconfig) = build_host_gitconfig() {
-        std::fs::write(rootfs.join("home/sandbox/.gitconfig"), &gitconfig)?;
-        std::fs::write(rootfs.join("root/.gitconfig"), &gitconfig)?;
+        let sandbox_gc = rootfs.join("home/sandbox/.gitconfig");
+        std::fs::write(&sandbox_gc, &gitconfig).io_ctx("write", &sandbox_gc)?;
+        let root_gc = rootfs.join("root/.gitconfig");
+        std::fs::write(&root_gc, &gitconfig).io_ctx("write", &root_gc)?;
     }
 
     Ok(())
@@ -672,7 +718,60 @@ pub fn has_cached_provision(environments: &[String], shell: &str) -> Option<Path
     if path.exists() { Some(path) } else { None }
 }
 
-/// Create a gzipped tarball of the provisioned rootfs for future reuse.
+#[cfg(target_os = "linux")]
+const PROVISION_CACHE_FILE: &str = ".provision_cache.tar.gz";
+#[cfg(target_os = "linux")]
+const BASE_CACHE_FILE: &str = ".base_cache.tar.gz";
+
+#[cfg(target_os = "linux")]
+fn build_full_rootfs_cache_script(out: &str) -> String {
+    let stem = out.trim_end_matches(".tar.gz");
+    format!(
+        r#"#!/bin/bash
+set -eo pipefail
+echo ">>> Capturing rootfs cache..."
+rm -f /tmp/{out} /tmp/{stem}.partial
+cd /
+tar czf /tmp/{stem}.partial \
+    --exclude=./proc/* \
+    --exclude=./sys/* \
+    --exclude=./dev/* \
+    --exclude=./tmp/* \
+    --exclude=./run/* \
+    --exclude=./workspace/* \
+    .
+mv /tmp/{stem}.partial /tmp/{out}
+[ -s /tmp/{out} ] || {{ echo "error: cache tarball is empty" >&2; exit 1; }}
+echo "=== Rootfs cache complete ==="
+"#
+    )
+}
+
+#[cfg(target_os = "linux")]
+pub fn build_provision_cache_script() -> String {
+    build_full_rootfs_cache_script(PROVISION_CACHE_FILE)
+}
+
+#[cfg(target_os = "linux")]
+pub fn build_base_cache_script() -> String {
+    build_full_rootfs_cache_script(BASE_CACHE_FILE)
+}
+
+#[cfg(target_os = "linux")]
+fn move_cache_tarball(src: &Path, dest: &Path) -> Result<(), IsolaError> {
+    if !src.exists() {
+        return Err(IsolaError::ExtractionFailed(format!(
+            "expected cache tarball at {} but the in-sandbox cache script did not produce it",
+            src.display(),
+        )));
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).io_ctx("create cache dir", parent)?;
+    }
+    std::fs::rename(src, dest).io_ctx("move cache tarball into host cache", src)?;
+    Ok(())
+}
+
 #[cfg(target_os = "linux")]
 pub fn cache_provisioned_rootfs(
     name: &str,
@@ -680,22 +779,9 @@ pub fn cache_provisioned_rootfs(
     shell: &str,
 ) -> Result<(), IsolaError> {
     let rootfs_path = paths::rootfs_dir(name);
-    let cache_path = paths::provision_cache_path(environments, shell);
-
-    let file = std::fs::File::create(&cache_path)?;
-    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
-    let mut builder = tar::Builder::new(encoder);
-    builder.follow_symlinks(false);
-    builder
-        .append_dir_all(".", &rootfs_path)
-        .map_err(|e| IsolaError::ExtractionFailed(format!("cache tarball: {e}")))?;
-    builder
-        .into_inner()
-        .map_err(|e| IsolaError::ExtractionFailed(format!("cache finalize: {e}")))?
-        .finish()
-        .map_err(|e| IsolaError::ExtractionFailed(format!("cache compress: {e}")))?;
-
-    Ok(())
+    let src = rootfs_path.join("tmp").join(PROVISION_CACHE_FILE);
+    let dest = paths::provision_cache_path(environments, shell);
+    move_cache_tarball(&src, &dest)
 }
 
 /// Minimal script to fix file ownership after extracting a cached provisioned rootfs.
@@ -837,6 +923,18 @@ impl LayerCacheStatus {
     pub fn all_cached(&self) -> bool {
         self.uncached.is_empty()
     }
+
+    /// Env layers are diffs captured on top of a provisioned base (no /bin/bash
+    /// of their own). If base is uncached — e.g. the shell differs from a
+    /// prior sandbox, since only base layers are keyed by shell — the cached
+    /// env diffs can't stand on their own and must be rebuilt too.
+    fn invalidate_envs_if_base_missing(&mut self) {
+        if self.uncached.iter().any(|n| n == "base") {
+            for (name, _) in self.cached.drain(..) {
+                self.uncached.push(name);
+            }
+        }
+    }
 }
 
 /// Compute the script text used for a layer's version hash.
@@ -880,7 +978,9 @@ pub fn check_layer_cache(
         }
     }
 
-    LayerCacheStatus { cached, uncached }
+    let mut status = LayerCacheStatus { cached, uncached };
+    status.invalidate_envs_if_base_missing();
+    status
 }
 
 /// Build a fixup script that sets up combined PATH for all environments and fixes ownership.
@@ -927,29 +1027,14 @@ pub fn build_layered_fixup_script(environments: &[String], registry: &PluginRegi
     script
 }
 
-/// Cache the base layer by tarballing the entire rootfs.
 #[cfg(target_os = "linux")]
 pub fn cache_base_layer(name: &str, shell: &SandboxShell) -> Result<PathBuf, IsolaError> {
     let rootfs_path = paths::rootfs_dir(name);
     let script = build_base_layer_script(shell);
     let hash = layer_version_hash(&script);
     let cache_path = paths::layer_cache_path("base", &hash, shell.name());
-
-    std::fs::create_dir_all(paths::layers_cache_dir())?;
-
-    let file = std::fs::File::create(&cache_path)?;
-    let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
-    let mut builder = tar::Builder::new(encoder);
-    builder.follow_symlinks(false);
-    builder
-        .append_dir_all(".", &rootfs_path)
-        .map_err(|e| IsolaError::ExtractionFailed(format!("base layer cache: {e}")))?;
-    builder
-        .into_inner()
-        .map_err(|e| IsolaError::ExtractionFailed(format!("base layer finalize: {e}")))?
-        .finish()
-        .map_err(|e| IsolaError::ExtractionFailed(format!("base layer compress: {e}")))?;
-
+    let src = rootfs_path.join("tmp").join(BASE_CACHE_FILE);
+    move_cache_tarball(&src, &cache_path)?;
     Ok(cache_path)
 }
 
@@ -973,8 +1058,10 @@ pub fn cache_env_layer(
     let hash = layer_version_hash(&script);
     let cache_path = paths::layer_cache_path(layer_name, &hash, shell.name());
 
-    std::fs::create_dir_all(paths::layers_cache_dir())?;
-    std::fs::rename(&layer_tar_in_rootfs, &cache_path)?;
+    let layers_dir = paths::layers_cache_dir();
+    std::fs::create_dir_all(&layers_dir).io_ctx("create layers cache dir", &layers_dir)?;
+    std::fs::rename(&layer_tar_in_rootfs, &cache_path)
+        .io_ctx("rename layer tarball into cache", &layer_tar_in_rootfs)?;
 
     Ok(Some(cache_path))
 }
@@ -1194,7 +1281,242 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")]
+    #[test]
+    fn extract_rootfs_preserves_usrmerge_bin_symlink() {
+        // Ubuntu 24.04 rootfs has `bin -> usr/bin` (usrmerge). The tarball
+        // declares `bin` as a symlink and `usr/bin/bash` as a file. Extraction
+        // must create both so `<root>/bin/bash` resolves.
+        use flate2::write::GzEncoder;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let tar_path = tmp.path().join("tiny-rootfs.tar.gz");
+
+        // Build a minimal tarball that mimics usrmerge ordering.
+        {
+            let file = std::fs::File::create(&tar_path).unwrap();
+            let encoder = GzEncoder::new(file, flate2::Compression::fast());
+            let mut builder = tar::Builder::new(encoder);
+
+            // ./bin -> usr/bin (symlink, appearing before usr)
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Symlink);
+            header.set_path("bin").unwrap();
+            header.set_link_name("usr/bin").unwrap();
+            header.set_size(0);
+            header.set_mode(0o777);
+            header.set_cksum();
+            builder.append(&header, std::io::empty()).unwrap();
+
+            // ./usr/bin/bash (file)
+            let bash_bytes = b"#!/placeholder\n";
+            let mut header = tar::Header::new_gnu();
+            header.set_entry_type(tar::EntryType::Regular);
+            header.set_path("usr/bin/bash").unwrap();
+            header.set_size(bash_bytes.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append(&header, std::io::Cursor::new(bash_bytes))
+                .unwrap();
+
+            builder.into_inner().unwrap().finish().unwrap();
+        }
+
+        let out = tmp.path().join("out");
+        extract_rootfs(&tar_path, &out).unwrap();
+
+        let bin = out.join("bin");
+        assert!(
+            bin.symlink_metadata().unwrap().file_type().is_symlink(),
+            "expected {} to be a symlink",
+            bin.display()
+        );
+        assert!(
+            out.join("usr/bin/bash").exists(),
+            "expected usr/bin/bash to exist"
+        );
+        assert!(
+            bin.join("bash").exists(),
+            "expected bin/bash to resolve via symlink"
+        );
+
+        // Round-trip through tar::Builder::append_dir_all to confirm the tar
+        // crate preserves the usrmerge symlink on write as well as read.
+        let recached = tmp.path().join("recached.tar.gz");
+        let file = std::fs::File::create(&recached).unwrap();
+        let encoder = GzEncoder::new(file, flate2::Compression::fast());
+        let mut builder = tar::Builder::new(encoder);
+        builder.follow_symlinks(false);
+        builder.append_dir_all(".", &out).unwrap();
+        builder.into_inner().unwrap().finish().unwrap();
+
+        let out2 = tmp.path().join("out2");
+        extract_rootfs(&recached, &out2).unwrap();
+        assert!(
+            out2.join("bin")
+                .symlink_metadata()
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "after round-trip, bin must still be a symlink"
+        );
+        assert!(
+            out2.join("bin/bash").exists(),
+            "after round-trip, bin/bash must resolve"
+        );
+    }
+
+    #[test]
+    fn ensure_rootfs_has_bash_ok_when_bash_resolves_via_symlink() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("usr/bin")).unwrap();
+        std::fs::write(root.join("usr/bin/bash"), b"#!/x\n").unwrap();
+        symlink("usr/bin", root.join("bin")).unwrap();
+        ensure_rootfs_has_bash(root).unwrap();
+    }
+
+    #[test]
+    fn ensure_rootfs_has_bash_errors_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = ensure_rootfs_has_bash(tmp.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("no working /bin/bash"), "got: {msg}");
+    }
+
+    #[test]
+    fn copy_dir_recursive_preserves_broken_symlinks() {
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        std::fs::create_dir_all(src.join("functions")).unwrap();
+        // Regular file: should copy as a regular file.
+        std::fs::write(src.join("functions/real.fish"), b"echo hi\n").unwrap();
+        // Broken symlink: target does not exist — real-world case is
+        // ~/.config/fish/functions/fzf_key_bindings.fish pointing at a
+        // package-manager-installed file that's since been removed.
+        symlink(
+            "/nonexistent/fzf_key_bindings.fish",
+            src.join("functions/broken.fish"),
+        )
+        .unwrap();
+        // Valid symlink to a sibling file.
+        symlink("real.fish", src.join("functions/alias.fish")).unwrap();
+
+        copy_dir_recursive(&src, &dst).expect("broken symlinks must not fail the copy");
+
+        let broken = dst.join("functions/broken.fish");
+        let broken_meta = std::fs::symlink_metadata(&broken).unwrap();
+        assert!(
+            broken_meta.file_type().is_symlink(),
+            "broken link must be preserved as a symlink, not dereferenced"
+        );
+        assert!(!broken.exists(), "broken link must remain dangling");
+
+        let alias = dst.join("functions/alias.fish");
+        assert!(
+            std::fs::symlink_metadata(&alias)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+        );
+        assert!(alias.exists(), "valid symlink must resolve");
+
+        let real = dst.join("functions/real.fish");
+        assert!(real.is_file());
+    }
+
+    #[test]
+    fn provision_cache_script_uses_partial_then_rename() {
+        let s = build_provision_cache_script();
+        // Atomic: write to .partial, then mv into place — never leave a
+        // truncated .tar.gz that future runs would treat as a valid cache.
+        assert!(s.contains(".provision_cache.partial"));
+        assert!(s.contains("mv /tmp/.provision_cache.partial /tmp/.provision_cache.tar.gz"));
+        // Fail-fast on any error so a partial tarball doesn't get renamed.
+        assert!(s.contains("set -eo pipefail"));
+    }
+
+    #[test]
+    fn cache_script_excludes_virtual_filesystems_and_workspace() {
+        // /proc /sys /dev /run are kernel virtual fs, /tmp would recurse into
+        // the tarball itself, /workspace is a host bind-mount that must never
+        // end up in the cached image.
+        for s in [build_provision_cache_script(), build_base_cache_script()] {
+            for excl in [
+                "./proc/*",
+                "./sys/*",
+                "./dev/*",
+                "./tmp/*",
+                "./run/*",
+                "./workspace/*",
+            ] {
+                assert!(s.contains(excl), "missing exclusion {excl} in:\n{s}");
+            }
+        }
+    }
+
+    #[test]
+    fn move_cache_tarball_errors_with_clear_message_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("not_there.tar.gz");
+        let dest = tmp.path().join("dest/cache.tar.gz");
+
+        let err = move_cache_tarball(&src, &dest).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("in-sandbox cache script"),
+            "error should explain the missing tarball means the in-sandbox script didn't run; got: {msg}"
+        );
+        assert!(!dest.exists());
+    }
+
+    #[test]
+    fn move_cache_tarball_renames_into_place_creating_parent_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src.tar.gz");
+        std::fs::write(&src, b"fake-tarball").unwrap();
+        let dest = tmp.path().join("nested/dir/cache.tar.gz");
+
+        move_cache_tarball(&src, &dest).unwrap();
+
+        assert!(!src.exists(), "src should have been moved");
+        assert_eq!(std::fs::read(&dest).unwrap(), b"fake-tarball");
+    }
+
+    #[test]
+    fn invalidate_envs_when_base_missing_moves_envs_to_uncached() {
+        let mut status = LayerCacheStatus {
+            cached: vec![
+                ("rust".to_string(), PathBuf::from("/fake/env-rust.tar.gz")),
+                (
+                    "nodejs".to_string(),
+                    PathBuf::from("/fake/env-nodejs.tar.gz"),
+                ),
+            ],
+            uncached: vec!["base".to_string()],
+        };
+        status.invalidate_envs_if_base_missing();
+        assert!(status.cached.is_empty());
+        assert_eq!(status.uncached, vec!["base", "rust", "nodejs"]);
+    }
+
+    #[test]
+    fn invalidate_envs_when_base_cached_keeps_envs_cached() {
+        let mut status = LayerCacheStatus {
+            cached: vec![
+                ("base".to_string(), PathBuf::from("/fake/base.tar.gz")),
+                ("rust".to_string(), PathBuf::from("/fake/env-rust.tar.gz")),
+            ],
+            uncached: vec!["nodejs".to_string()],
+        };
+        status.invalidate_envs_if_base_missing();
+        assert_eq!(status.cached.len(), 2);
+        assert_eq!(status.uncached, vec!["nodejs"]);
+    }
+
     #[test]
     fn check_layer_cache_sorts_envs() {
         let r = registry();

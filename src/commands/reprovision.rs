@@ -90,9 +90,21 @@ fn run_linux(
             return Err(IsolaError::ProvisionFailed(exit_code));
         }
 
-        // Cache the layer
+        // Cache the layer. For the base layer the tarball is produced inside
+        // the sandbox (so unmapped subuids on the host don't cause EACCES);
+        // env layers tar themselves as part of their provision script.
         if layer_name == "base" {
-            if let Err(e) = rootfs::cache_base_layer(name, &config.shell) {
+            let res = (|| -> Result<(), IsolaError> {
+                let cache_script = rootfs::build_base_cache_script();
+                let child = crate::commands::enter::run_command_captured(name, &cache_script)?;
+                let (exit_code, _) =
+                    progress::monitor_provisioning(child, &progress, &cache_script)?;
+                if exit_code != 0 {
+                    return Err(IsolaError::ProvisionFailed(exit_code));
+                }
+                rootfs::cache_base_layer(name, &config.shell).map(|_| ())
+            })();
+            if let Err(e) = res {
                 eprintln!("warning: failed to cache base layer: {e}");
             }
         } else if let Err(e) = rootfs::cache_env_layer(name, layer_name, &config.shell, &registry) {

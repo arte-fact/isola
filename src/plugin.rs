@@ -157,6 +157,10 @@ const BUNDLED_PLUGINS: &[BundledPlugin] = &[
         install_script: Some(include_str!("../plugins/git/install.sh")),
     },
     BundledPlugin {
+        manifest_yaml: include_str!("../plugins/fzf/plugin.yaml"),
+        install_script: Some(include_str!("../plugins/fzf/install.sh")),
+    },
+    BundledPlugin {
         manifest_yaml: include_str!("../plugins/rocm/plugin.yaml"),
         install_script: Some(include_str!("../plugins/rocm/install.sh")),
     },
@@ -371,6 +375,7 @@ mod tests {
         assert!(names.contains(&"go"));
         assert!(names.contains(&"gpu"));
         assert!(names.contains(&"neovim"));
+        assert!(names.contains(&"fzf"));
         assert!(names.contains(&"ssh-keys"));
         assert!(names.contains(&"git-config"));
         assert!(names.contains(&"fish-config"));

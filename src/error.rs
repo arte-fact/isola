@@ -1,3 +1,5 @@
+use std::path::{Path, PathBuf};
+
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -25,6 +27,17 @@ pub enum IsolaError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// IO error with operation + path context. Prefer this over `Io` so error
+    /// messages identify *which* file failed (ENOENT without a path is nearly
+    /// impossible to debug).
+    #[error("failed to {op} '{}': {source}", path.display())]
+    IoAt {
+        op: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
@@ -33,6 +46,25 @@ pub enum IsolaError {
 
     #[error("Plugin error: {0}")]
     PluginError(String),
+}
+
+/// Attach operation + path context to a `std::io::Result`.
+///
+/// Use this at every filesystem call site on the creation hot path so a bare
+/// ENOENT/EACCES turns into `"failed to <op> '<path>': No such file or
+/// directory (os error 2)"` instead of the pathless default.
+pub trait IoContext<T> {
+    fn io_ctx(self, op: &'static str, path: impl AsRef<Path>) -> Result<T, IsolaError>;
+}
+
+impl<T> IoContext<T> for std::io::Result<T> {
+    fn io_ctx(self, op: &'static str, path: impl AsRef<Path>) -> Result<T, IsolaError> {
+        self.map_err(|source| IsolaError::IoAt {
+            op,
+            path: path.as_ref().to_path_buf(),
+            source,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -89,6 +121,30 @@ mod tests {
         let e: IsolaError = io_err.into();
         assert!(matches!(e, IsolaError::Io(_)));
         assert!(e.to_string().contains("file not found"));
+    }
+
+    #[test]
+    fn io_ctx_adds_path_and_op() {
+        let result: std::io::Result<()> = Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "No such file or directory (os error 2)",
+        ));
+        let e = result.io_ctx("read", "/etc/resolv.conf").unwrap_err();
+        let msg = e.to_string();
+        assert!(msg.contains("read"), "missing op: {msg}");
+        assert!(msg.contains("/etc/resolv.conf"), "missing path: {msg}");
+        assert!(matches!(e, IsolaError::IoAt { .. }));
+    }
+
+    #[test]
+    fn io_ctx_exposes_source_for_chain() {
+        let result: std::io::Result<()> = Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ));
+        let e = result.io_ctx("open", "/some/path").unwrap_err();
+        let src = std::error::Error::source(&e).expect("IoAt must expose source");
+        assert!(src.to_string().contains("denied"));
     }
 }
 

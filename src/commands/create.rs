@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use chrono::Utc;
 
-use crate::error::IsolaError;
+use crate::error::{IoContext, IsolaError};
 use crate::paths;
 use crate::plugin::{PluginLayer, PluginRegistry};
 use crate::sandbox::backend;
@@ -149,7 +149,7 @@ fn run_linux(
     progress.finish_step("Preflight checks passed");
 
     let rootfs_path = paths::rootfs_dir(name);
-    std::fs::create_dir_all(&rootfs_path)?;
+    std::fs::create_dir_all(&rootfs_path).io_ctx("create sandbox rootfs dir", &rootfs_path)?;
 
     // Try layered cache first, then legacy monolithic cache, then full provision
     let layer_status = if no_cache {
@@ -166,6 +166,7 @@ fn run_linux(
         for (_, layer_path) in &status.cached {
             rootfs::extract_rootfs(layer_path, &rootfs_path)?;
         }
+        rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
         progress.finish_step("Extracted cached layers");
         true
     } else if !no_cache
@@ -174,6 +175,7 @@ fn run_linux(
         // Legacy fallback: monolithic cache exists
         progress.start_step("Extracting cached rootfs...");
         rootfs::extract_rootfs(&cache_path, &rootfs_path)?;
+        rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
         progress.finish_step("Extracted cached rootfs");
         false
     } else if let Some(ref status) = layer_status
@@ -184,6 +186,9 @@ fn run_linux(
         for (_, layer_path) in &status.cached {
             rootfs::extract_rootfs(layer_path, &rootfs_path)?;
         }
+        // Must check before the uncached loop — run_command_captured execs
+        // /bin/bash, which surfaces a corrupt cache as a cryptic ENOENT.
+        rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
         progress.finish_step("Extracted cached layers");
 
         // Build each uncached layer
@@ -212,8 +217,14 @@ fn run_linux(
             // Cache the layer
             if layer_name == "base" {
                 progress.start_step("Caching base layer...");
-                match rootfs::cache_base_layer(name, shell) {
-                    Ok(_) => progress.finish_step("Cached base layer"),
+                let res = run_cache_script_and_move(
+                    name,
+                    &rootfs::build_base_cache_script(),
+                    &progress,
+                    || rootfs::cache_base_layer(name, shell).map(|_| ()),
+                );
+                match res {
+                    Ok(()) => progress.finish_step("Cached base layer"),
                     Err(e) => progress.finish_step(&format!("Cache skipped: {e}")),
                 }
             } else {
@@ -236,6 +247,7 @@ fn run_linux(
         let tarball = rootfs::ensure_rootfs_cached_with_progress(&progress)?;
         progress.start_step("Extracting rootfs...");
         rootfs::extract_rootfs(&tarball, &rootfs_path)?;
+        rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
         progress.finish_step("Extracted rootfs");
         false
     };
@@ -286,30 +298,47 @@ fn run_linux(
             return Err(IsolaError::ProvisionFailed(exit_code));
         }
 
-        // Cache as layers for future use
-        progress.start_step("Caching layers...");
-        let mut cached_any = false;
-
-        match rootfs::cache_base_layer(name, shell) {
-            Ok(_) => cached_any = true,
-            Err(e) => eprintln!("  Warning: base layer cache failed: {e}"),
-        }
-
-        match rootfs::cache_provisioned_rootfs(name, environments, shell.name()) {
-            Ok(()) => cached_any = true,
-            Err(e) => eprintln!("  Warning: monolithic cache failed: {e}"),
-        }
-
-        if cached_any {
-            progress.finish_step("Cached for future use");
-        } else {
-            progress.finish_step("Cache skipped");
+        // Cache the whole provisioned rootfs for an exact-config rerun. The
+        // tarball is produced *inside* the sandbox so tar can read files owned
+        // by the mapped sandbox UID (an unmapped subuid from the host's POV).
+        // We deliberately do NOT call cache_base_layer here: the post-provision
+        // rootfs has env layers mixed in, so captured as "base" it would
+        // poison future sandboxes that match the base-layer hash but expect
+        // a pure base. Layered caches are built only via the layered path.
+        progress.start_step("Caching for future use...");
+        let cache_result = run_cache_script_and_move(
+            name,
+            &rootfs::build_provision_cache_script(),
+            &progress,
+            || rootfs::cache_provisioned_rootfs(name, environments, shell.name()),
+        );
+        match cache_result {
+            Ok(()) => progress.finish_step("Cached for future use"),
+            Err(e) => {
+                eprintln!("  Warning: cache failed: {e}");
+                progress.finish_step("Cache skipped");
+            }
         }
 
         progress.finish_success(environments);
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn run_cache_script_and_move(
+    name: &str,
+    script: &str,
+    progress: &crate::progress::CreationProgress,
+    move_out: impl FnOnce() -> Result<(), IsolaError>,
+) -> Result<(), IsolaError> {
+    let child = crate::commands::enter::run_command_captured(name, script)?;
+    let (exit_code, _) = crate::progress::monitor_provisioning(child, progress, script)?;
+    if exit_code != 0 {
+        return Err(IsolaError::ProvisionFailed(exit_code));
+    }
+    move_out()
 }
 
 #[cfg(target_os = "linux")]
