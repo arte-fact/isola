@@ -48,11 +48,20 @@ pub trait SandboxBackend {
 
     /// Build a provisioning script for the given environments.
     /// Backends can override to add platform-specific steps (e.g. Claude CLI installation).
-    fn build_provision_script(&self, environments: &[String]) -> String {
+    fn build_provision_script(
+        &self,
+        environments: &[String],
+        plugin_vars: &std::collections::BTreeMap<String, String>,
+    ) -> String {
         use crate::plugin::PluginRegistry;
         use crate::sandbox::config::SandboxShell;
         let registry = PluginRegistry::load().expect("failed to load plugin registry");
-        rootfs::build_provision_script(environments, &SandboxShell::default(), &registry)
+        rootfs::build_provision_script(
+            environments,
+            &SandboxShell::default(),
+            &registry,
+            plugin_vars,
+        )
     }
 
     /// Description of the isolation mechanism (for CLAUDE.md).

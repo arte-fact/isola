@@ -18,17 +18,21 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
 
     #[cfg(target_os = "macos")]
     {
-        run_macos(name, &config.environments)
+        run_macos(name, &config.environments, &config.plugin_vars)
     }
 }
 
 #[cfg(target_os = "macos")]
-fn run_macos(name: &str, environments: &[String]) -> Result<(), IsolaError> {
+fn run_macos(
+    name: &str,
+    environments: &[String],
+    plugin_vars: &std::collections::BTreeMap<String, String>,
+) -> Result<(), IsolaError> {
     use crate::sandbox::backend;
     let b = backend::create_backend();
     b.write_sandbox_files(name, environments)?;
 
-    let script = b.build_provision_script(environments);
+    let script = b.build_provision_script(environments, plugin_vars);
     eprintln!("Re-provisioning '{}': {}...", name, environments.join(", "));
     let exit_code = b.run_command(name, &script)?;
     if exit_code != 0 {
@@ -58,7 +62,8 @@ fn run_linux(
     progress.finish_step("Configured rootfs");
 
     // Check which layers need rebuilding
-    let layer_status = rootfs::check_layer_cache(environments, &config.shell, &registry);
+    let layer_status =
+        rootfs::check_layer_cache(environments, &config.shell, &registry, &config.plugin_vars);
     let mut built_layers = Vec::new();
     let mut cached_layers = Vec::new();
 
@@ -77,9 +82,9 @@ fn run_linux(
         let script = if layer_name == "base" {
             rootfs::build_base_layer_script(&config.shell)
         } else {
-            rootfs::build_env_layer_script(layer_name, &registry).ok_or_else(|| {
-                IsolaError::PluginError(format!("no plugin found for '{layer_name}'"))
-            })?
+            rootfs::build_env_layer_script(layer_name, &registry, &config.plugin_vars).ok_or_else(
+                || IsolaError::PluginError(format!("no plugin found for '{layer_name}'")),
+            )?
         };
 
         progress.start_step(&format!("Provisioning {layer_name}..."));
@@ -107,7 +112,13 @@ fn run_linux(
             if let Err(e) = res {
                 eprintln!("warning: failed to cache base layer: {e}");
             }
-        } else if let Err(e) = rootfs::cache_env_layer(name, layer_name, &config.shell, &registry) {
+        } else if let Err(e) = rootfs::cache_env_layer(
+            name,
+            layer_name,
+            &config.shell,
+            &registry,
+            &config.plugin_vars,
+        ) {
             eprintln!("warning: failed to cache {layer_name} layer: {e}");
         }
 

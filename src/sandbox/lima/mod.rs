@@ -418,12 +418,20 @@ impl SandboxBackend for LimaBackend {
         template::CLOUD_IMAGE_URL
     }
 
-    fn build_provision_script(&self, environments: &[String]) -> String {
+    fn build_provision_script(
+        &self,
+        environments: &[String],
+        plugin_vars: &std::collections::BTreeMap<String, String>,
+    ) -> String {
         use crate::plugin::PluginRegistry;
         use crate::sandbox::config::SandboxShell;
         let registry = PluginRegistry::load().expect("failed to load plugin registry");
-        let mut script =
-            rootfs::build_provision_script(environments, &SandboxShell::default(), &registry);
+        let mut script = rootfs::build_provision_script(
+            environments,
+            &SandboxShell::default(),
+            &registry,
+            plugin_vars,
+        );
 
         // Always install Node.js (needed for Claude CLI) if not already selected
         if !environments.iter().any(|e| e == "nodejs") {

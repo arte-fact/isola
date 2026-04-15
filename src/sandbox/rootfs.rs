@@ -203,11 +203,36 @@ fn build_host_gitconfig() -> Option<String> {
     Some(cfg)
 }
 
+/// Shell-escape a value for single-quoted bash literal.
+fn sh_single_quote(v: &str) -> String {
+    format!("'{}'", v.replace('\'', r"'\''"))
+}
+
+/// Emit `export VAR='value'` lines for a plugin's declared prompts, resolving
+/// each value from `plugin_vars` first, then falling back to the prompt default.
+pub fn emit_plugin_exports(
+    plugin: &crate::plugin::Plugin,
+    plugin_vars: &std::collections::BTreeMap<String, String>,
+) -> String {
+    let mut out = String::new();
+    for p in &plugin.manifest.prompts {
+        let value = plugin_vars
+            .get(&p.env_var)
+            .cloned()
+            .or_else(|| p.default.clone());
+        if let Some(v) = value {
+            out.push_str(&format!("export {}={}\n", p.env_var, sh_single_quote(&v)));
+        }
+    }
+    out
+}
+
 /// Build a provisioning script from selected environments using the plugin registry.
 pub fn build_provision_script(
     environments: &[String],
     shell: &SandboxShell,
     registry: &PluginRegistry,
+    plugin_vars: &std::collections::BTreeMap<String, String>,
 ) -> String {
     let mut script = String::from("#!/bin/bash\n");
     script.push_str("export PATH=\"/root/.cargo/bin:/root/.local/bin:/usr/local/go/bin:$PATH\"\n");
@@ -250,6 +275,10 @@ chmod 700 /run/user/0 /run/user/1000
         if let Some(plugin) = registry.get(env) {
             if let Some(ref install_script) = plugin.install_script {
                 script.push('\n');
+                let exports = emit_plugin_exports(plugin, plugin_vars);
+                if !exports.is_empty() {
+                    script.push_str(&exports);
+                }
                 script.push_str(install_script);
             }
         } else {
@@ -876,11 +905,19 @@ ISOLA_BASH_EOF
 /// The script uses a marker file to capture only the files changed by this layer.
 /// Returns None if the plugin is not found or has no install script (config-only plugin).
 #[cfg(target_os = "linux")]
-pub fn build_env_layer_script(env_name: &str, registry: &PluginRegistry) -> Option<String> {
+pub fn build_env_layer_script(
+    env_name: &str,
+    registry: &PluginRegistry,
+    plugin_vars: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
     let plugin = registry.get(env_name)?;
     let install_script = plugin.install_script.as_ref()?;
 
     let mut script = String::from(LAYER_CAPTURE_HEADER);
+    let exports = emit_plugin_exports(plugin, plugin_vars);
+    if !exports.is_empty() {
+        script.push_str(&exports);
+    }
     script.push_str(install_script);
 
     // Copy tools to sandbox user (from plugin paths.copy)
@@ -943,10 +980,11 @@ fn layer_script_text(
     layer_name: &str,
     shell: &SandboxShell,
     registry: &PluginRegistry,
+    plugin_vars: &std::collections::BTreeMap<String, String>,
 ) -> Option<String> {
     match layer_name {
         "base" => Some(build_base_layer_script(shell)),
-        env_name => build_env_layer_script(env_name, registry),
+        env_name => build_env_layer_script(env_name, registry, plugin_vars),
     }
 }
 
@@ -956,6 +994,7 @@ pub fn check_layer_cache(
     environments: &[String],
     shell: &SandboxShell,
     registry: &PluginRegistry,
+    plugin_vars: &std::collections::BTreeMap<String, String>,
 ) -> LayerCacheStatus {
     let mut cached = Vec::new();
     let mut uncached = Vec::new();
@@ -967,7 +1006,7 @@ pub fn check_layer_cache(
     layer_names.extend(sorted_envs);
 
     for name in &layer_names {
-        if let Some(script) = layer_script_text(name, shell, registry) {
+        if let Some(script) = layer_script_text(name, shell, registry, plugin_vars) {
             let hash = layer_version_hash(&script);
             let path = paths::layer_cache_path(name, &hash, shell.name());
             if path.exists() {
@@ -1045,6 +1084,7 @@ pub fn cache_env_layer(
     layer_name: &str,
     shell: &SandboxShell,
     registry: &PluginRegistry,
+    plugin_vars: &std::collections::BTreeMap<String, String>,
 ) -> Result<Option<PathBuf>, IsolaError> {
     let rootfs_path = paths::rootfs_dir(name);
     let layer_tar_in_rootfs = rootfs_path.join("tmp/.layer_cache.tar.gz");
@@ -1053,7 +1093,7 @@ pub fn cache_env_layer(
         return Ok(None);
     }
 
-    let script = layer_script_text(layer_name, shell, registry)
+    let script = layer_script_text(layer_name, shell, registry, plugin_vars)
         .ok_or_else(|| IsolaError::PluginError(format!("unknown layer: {layer_name}")))?;
     let hash = layer_version_hash(&script);
     let cache_path = paths::layer_cache_path(layer_name, &hash, shell.name());
@@ -1070,15 +1110,20 @@ pub fn cache_env_layer(
 mod tests {
     use super::*;
     use crate::plugin::PluginRegistry;
+    use std::collections::BTreeMap;
 
     fn registry() -> PluginRegistry {
         PluginRegistry::load().unwrap()
     }
 
+    fn pv() -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+
     #[test]
     fn provision_script_base_only() {
         let r = registry();
-        let script = build_provision_script(&[], &SandboxShell::Bash, &r);
+        let script = build_provision_script(&[], &SandboxShell::Bash, &r, &pv());
         assert!(script.contains("apt-get update"));
         assert!(script.contains("Creating sandbox user"));
         assert!(!script.contains("Installing Rust"));
@@ -1089,7 +1134,7 @@ mod tests {
     fn provision_script_includes_selected_envs() {
         let r = registry();
         let envs = vec!["rust".to_string(), "nodejs".to_string()];
-        let script = build_provision_script(&envs, &SandboxShell::Bash, &r);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, &r, &pv());
         assert!(script.contains("Installing Rust"));
         assert!(script.contains("Installing Node.js"));
         assert!(!script.contains("Installing Python"));
@@ -1105,7 +1150,7 @@ mod tests {
             "python-uv".to_string(),
             "go".to_string(),
         ];
-        let script = build_provision_script(&envs, &SandboxShell::Bash, &r);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, &r, &pv());
         assert!(script.contains("Installing Rust"));
         assert!(script.contains("Installing Node.js"));
         assert!(script.contains("Installing Python"));
@@ -1120,7 +1165,7 @@ mod tests {
     fn provision_script_copies_tools_for_rust() {
         let r = registry();
         let envs = vec!["rust".to_string()];
-        let script = build_provision_script(&envs, &SandboxShell::Bash, &r);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, &r, &pv());
         assert!(script.contains("/home/sandbox/.cargo/bin"));
         assert!(script.contains("cp -rp /root/.cargo /home/sandbox/.cargo"));
     }
@@ -1129,7 +1174,7 @@ mod tests {
     fn provision_script_unknown_env_ignored() {
         let r = registry();
         let envs = vec!["unknown-env".to_string()];
-        let script = build_provision_script(&envs, &SandboxShell::Bash, &r);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, &r, &pv());
         assert!(script.contains("apt-get update"));
     }
 
@@ -1137,7 +1182,7 @@ mod tests {
     fn provision_script_installs_fish() {
         let r = registry();
         let envs = vec!["fish".to_string()];
-        let script = build_provision_script(&envs, &SandboxShell::Fish, &r);
+        let script = build_provision_script(&envs, &SandboxShell::Fish, &r, &pv());
         assert!(script.contains("Installing fish shell"));
         assert!(script.contains("/usr/bin/fish"));
     }
@@ -1146,7 +1191,7 @@ mod tests {
     fn provision_script_installs_zsh() {
         let r = registry();
         let envs = vec!["zsh".to_string()];
-        let script = build_provision_script(&envs, &SandboxShell::Zsh, &r);
+        let script = build_provision_script(&envs, &SandboxShell::Zsh, &r, &pv());
         assert!(script.contains("Installing zsh"));
         assert!(script.contains("/usr/bin/zsh"));
     }
@@ -1155,7 +1200,7 @@ mod tests {
     fn provision_script_installs_neovim() {
         let r = registry();
         let envs = vec!["neovim".to_string()];
-        let script = build_provision_script(&envs, &SandboxShell::Bash, &r);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, &r, &pv());
         assert!(script.contains("Installing neovim"));
     }
 
@@ -1205,7 +1250,7 @@ mod tests {
     #[test]
     fn env_layer_script_rust() {
         let r = registry();
-        let script = build_env_layer_script("rust", &r).unwrap();
+        let script = build_env_layer_script("rust", &r, &pv()).unwrap();
         assert!(script.contains("Installing Rust"));
         assert!(script.contains("cp -rp /root/.cargo /home/sandbox/.cargo"));
         assert!(script.contains(".layer_marker"));
@@ -1216,7 +1261,7 @@ mod tests {
     #[test]
     fn env_layer_script_nodejs() {
         let r = registry();
-        let script = build_env_layer_script("nodejs", &r).unwrap();
+        let script = build_env_layer_script("nodejs", &r, &pv()).unwrap();
         assert!(script.contains("Installing Node.js"));
         assert!(script.contains(".layer_marker"));
     }
@@ -1225,14 +1270,14 @@ mod tests {
     #[test]
     fn env_layer_script_unknown_returns_none() {
         let r = registry();
-        assert!(build_env_layer_script("unknown", &r).is_none());
+        assert!(build_env_layer_script("unknown", &r, &pv()).is_none());
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn env_layer_script_neovim() {
         let r = registry();
-        let script = build_env_layer_script("neovim", &r).unwrap();
+        let script = build_env_layer_script("neovim", &r, &pv()).unwrap();
         assert!(script.contains("Installing neovim"));
         assert!(script.contains(".layer_marker"));
     }
@@ -1262,7 +1307,7 @@ mod tests {
     fn check_layer_cache_reports_all_layers() {
         let r = registry();
         let envs = vec!["rust".to_string()];
-        let status = check_layer_cache(&envs, &SandboxShell::Bash, &r);
+        let status = check_layer_cache(&envs, &SandboxShell::Bash, &r, &pv());
         let total = status.cached.len() + status.uncached.len();
         assert_eq!(total, 2);
     }
@@ -1272,7 +1317,7 @@ mod tests {
     fn provision_script_creates_user_before_plugins() {
         let r = registry();
         let envs = vec!["gpu".to_string()];
-        let script = build_provision_script(&envs, &SandboxShell::Bash, &r);
+        let script = build_provision_script(&envs, &SandboxShell::Bash, &r, &pv());
         let user_pos = script.find("Creating sandbox user").unwrap();
         let gpu_pos = script.find("Setting up GPU access").unwrap();
         assert!(
@@ -1521,7 +1566,7 @@ mod tests {
     fn check_layer_cache_sorts_envs() {
         let r = registry();
         let envs = vec!["nodejs".to_string(), "rust".to_string(), "go".to_string()];
-        let status = check_layer_cache(&envs, &SandboxShell::Bash, &r);
+        let status = check_layer_cache(&envs, &SandboxShell::Bash, &r, &pv());
         let mut all_names: Vec<String> = status
             .cached
             .iter()

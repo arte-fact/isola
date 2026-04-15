@@ -26,6 +26,21 @@ pub struct PluginAutoDetect {
     pub host_path: String,
 }
 
+/// Interactive prompt shown by the setup wizard when the plugin is selected.
+/// The answer is exported as an environment variable before the install script runs.
+#[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
+pub struct PluginPrompt {
+    pub name: String,
+    pub message: String,
+    /// Environment variable to export with the chosen value.
+    pub env_var: String,
+    /// Fixed list of choices. If empty, a free-text prompt is shown.
+    #[serde(default)]
+    pub choices: Vec<String>,
+    pub default: Option<String>,
+}
+
 /// Deserialized from plugin.yaml
 #[derive(Debug, Clone, Deserialize)]
 #[allow(dead_code)]
@@ -39,6 +54,8 @@ pub struct PluginManifest {
     #[serde(default)]
     pub layer: PluginLayer,
     pub auto_detect: Option<PluginAutoDetect>,
+    #[serde(default)]
+    pub prompts: Vec<PluginPrompt>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

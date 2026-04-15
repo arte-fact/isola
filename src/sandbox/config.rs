@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -79,6 +80,10 @@ pub struct SandboxConfig {
     /// Device nodes to bind-mount from host (e.g., "/dev/kfd", "/dev/dri").
     #[serde(default)]
     pub devices: Vec<String>,
+    /// Env-var values collected from plugin prompts during setup
+    /// (e.g., {"PHP_VERSION": "8.3"}). Exported before each plugin's install script.
+    #[serde(default)]
+    pub plugin_vars: BTreeMap<String, String>,
 }
 
 impl SandboxConfig {
@@ -110,6 +115,9 @@ pub struct LocalConfig {
     /// Device nodes to bind-mount from host (e.g., "/dev/kfd", "/dev/dri").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub devices: Option<Vec<String>>,
+    /// Env-var values collected from plugin prompts during setup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugin_vars: Option<BTreeMap<String, String>>,
 }
 
 impl LocalConfig {
@@ -171,6 +179,7 @@ mod tests {
             share_display: false,
             shell: SandboxShell::Fish,
             devices: vec![],
+            plugin_vars: BTreeMap::new(),
         };
 
         let json = serde_json::to_string_pretty(&config).unwrap();
@@ -250,6 +259,7 @@ mod tests {
             shell: Some(SandboxShell::Fish),
             share_display: None,
             devices: None,
+            plugin_vars: None,
         };
 
         let yaml = serde_yaml::to_string(&config).unwrap();
@@ -297,6 +307,7 @@ mod tests {
             shell: Some(SandboxShell::Zsh),
             share_display: None,
             devices: None,
+            plugin_vars: None,
         };
 
         config.save(&dir).unwrap();

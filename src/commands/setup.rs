@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -177,7 +178,37 @@ pub fn run() -> Result<(), IsolaError> {
         eprintln!("No plugins selected, installing base system only.");
     }
 
-    // 7. Create sandbox with selected options
+    // 7. Collect plugin-declared prompt answers (e.g. PHP_VERSION for the php plugin)
+    let mut plugin_vars: BTreeMap<String, String> = BTreeMap::new();
+    for env in &env_ids {
+        let Some(plugin) = registry.get(env) else {
+            continue;
+        };
+        for prompt in &plugin.manifest.prompts {
+            let default_str = prompt.default.as_deref();
+            let answer = if prompt.choices.is_empty() {
+                let mut text = Text::new(&prompt.message);
+                if let Some(d) = default_str {
+                    text = text.with_default(d);
+                }
+                text.prompt()
+                    .map_err(|e| IsolaError::ConfigError(e.to_string()))?
+            } else {
+                let choices: Vec<&str> = prompt.choices.iter().map(|s| s.as_str()).collect();
+                let cursor = default_str
+                    .and_then(|d| choices.iter().position(|c| *c == d))
+                    .unwrap_or(0);
+                Select::new(&prompt.message, choices)
+                    .with_starting_cursor(cursor)
+                    .prompt()
+                    .map_err(|e| IsolaError::ConfigError(e.to_string()))?
+                    .to_string()
+            };
+            plugin_vars.insert(prompt.env_var.clone(), answer);
+        }
+    }
+
+    // 8. Create sandbox with selected options
     crate::commands::create::run_with_envs(
         &name,
         Some(workspace_path.clone()),
@@ -186,15 +217,21 @@ pub fn run() -> Result<(), IsolaError> {
         false,
         &shell,
         &registry,
+        &plugin_vars,
     )?;
 
-    // 8. Save .isola/config.yaml for team sharing
+    // 9. Save .isola/config.yaml for team sharing
     if !paths::local_config_path(&workspace_path).exists() {
         let local = LocalConfig {
             environments: Some(env_ids.clone()),
             shell: Some(shell.clone()),
             share_display: if share_display { Some(true) } else { None },
             devices: None,
+            plugin_vars: if plugin_vars.is_empty() {
+                None
+            } else {
+                Some(plugin_vars.clone())
+            },
         };
         local.save(&workspace_path)?;
         eprintln!("Saved .isola/config.yaml — commit to share sandbox config with your team.");

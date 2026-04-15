@@ -1,5 +1,5 @@
 name: php
-description: "PHP 8.4 + Composer + Laravel Installer"
+description: "PHP + Composer + Laravel Installer"
 version: "1.0.0"
 layer: project
 provision:
@@ -8,3 +8,9 @@ provision:
 paths:
   bin: []
   copy: []
+prompts:
+  - name: version
+    message: "PHP version:"
+    env_var: PHP_VERSION
+    choices: ["8.4", "8.3", "8.2", "8.1"]
+    default: "8.4"

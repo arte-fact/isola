@@ -16,7 +16,7 @@ images:
     arch: "x86_64"
 cpus: 4
 memory: "4GiB"
-disk: "20GiB"
+disk: "5GiB"
 mountType: "virtiofs"
 containerd:
   system: false

@@ -8,7 +8,7 @@ apt-get install -y -qq --no-install-recommends software-properties-common
 add-apt-repository -y ppa:ondrej/php
 apt-get update -qq
 
-PHP_VERSION=8.4
+PHP_VERSION="${PHP_VERSION:-8.4}"
 
 apt-get install -y -qq --no-install-recommends \
     php${PHP_VERSION}-cli \

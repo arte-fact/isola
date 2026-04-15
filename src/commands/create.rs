@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use chrono::Utc;
@@ -39,6 +40,7 @@ pub fn run(name: &str, workspace: Option<PathBuf>, no_cache: bool) -> Result<(),
         no_cache,
         &SandboxShell::default(),
         &registry,
+        &BTreeMap::new(),
     )
 }
 
@@ -52,6 +54,7 @@ pub fn run_with_envs(
     #[cfg_attr(target_os = "macos", allow(unused_variables))] no_cache: bool,
     shell: &SandboxShell,
     registry: &PluginRegistry,
+    plugin_vars: &BTreeMap<String, String>,
 ) -> Result<(), IsolaError> {
     validate_name(name)?;
 
@@ -73,6 +76,7 @@ pub fn run_with_envs(
             no_cache,
             shell,
             registry,
+            plugin_vars,
         )
     }
 
@@ -85,6 +89,7 @@ pub fn run_with_envs(
             share_display,
             shell,
             registry,
+            plugin_vars,
         )
     }
 }
@@ -97,6 +102,7 @@ fn run_macos(
     share_display: bool,
     shell: &SandboxShell,
     _registry: &PluginRegistry,
+    plugin_vars: &BTreeMap<String, String>,
 ) -> Result<(), IsolaError> {
     let b = backend::create_backend();
 
@@ -116,12 +122,13 @@ fn run_macos(
         share_display,
         shell: shell.clone(),
         devices: vec![],
+        plugin_vars: plugin_vars.clone(),
     };
     config.save()?;
 
     eprintln!("Sandbox '{}' created successfully", name);
 
-    let script = b.build_provision_script(environments);
+    let script = b.build_provision_script(environments, plugin_vars);
     eprintln!("Provisioning: {}...", environments.join(", "));
     let exit_code = b.run_command(name, &script)?;
     if exit_code != 0 {
@@ -141,6 +148,7 @@ fn run_linux(
     no_cache: bool,
     shell: &SandboxShell,
     registry: &PluginRegistry,
+    plugin_vars: &BTreeMap<String, String>,
 ) -> Result<(), IsolaError> {
     use crate::progress::{self, CreationProgress};
     use crate::sandbox::rootfs;
@@ -155,7 +163,12 @@ fn run_linux(
     let layer_status = if no_cache {
         None
     } else {
-        Some(rootfs::check_layer_cache(environments, shell, registry))
+        Some(rootfs::check_layer_cache(
+            environments,
+            shell,
+            registry,
+            plugin_vars,
+        ))
     };
 
     let used_layered_cache = if let Some(ref status) = layer_status
@@ -196,15 +209,22 @@ fn run_linux(
             let script = if layer_name == "base" {
                 rootfs::build_base_layer_script(shell)
             } else {
-                rootfs::build_env_layer_script(layer_name, registry).ok_or_else(|| {
-                    IsolaError::PluginError(format!("no plugin found for '{layer_name}'"))
-                })?
+                rootfs::build_env_layer_script(layer_name, registry, plugin_vars).ok_or_else(
+                    || IsolaError::PluginError(format!("no plugin found for '{layer_name}'")),
+                )?
             };
 
             progress.start_step(&format!("Provisioning {layer_name}..."));
 
             // Save config early so run_command_captured can find the sandbox
-            save_config(name, &workspace, environments, share_display, shell)?;
+            save_config(
+                name,
+                &workspace,
+                environments,
+                share_display,
+                shell,
+                plugin_vars,
+            )?;
 
             let child = crate::commands::enter::run_command_captured(name, &script)?;
             let (exit_code, last_lines) =
@@ -228,7 +248,7 @@ fn run_linux(
                     Err(e) => progress.finish_step(&format!("Cache skipped: {e}")),
                 }
             } else {
-                match rootfs::cache_env_layer(name, layer_name, shell, registry) {
+                match rootfs::cache_env_layer(name, layer_name, shell, registry, plugin_vars) {
                     Ok(Some(_)) => {
                         progress.finish_step(&format!("Cached {layer_name} layer"));
                     }
@@ -258,7 +278,14 @@ fn run_linux(
     progress.finish_step("Configured rootfs");
 
     // Save config (may already exist from partial layer build, save again to ensure latest)
-    save_config(name, &workspace, environments, share_display, shell)?;
+    save_config(
+        name,
+        &workspace,
+        environments,
+        share_display,
+        shell,
+        plugin_vars,
+    )?;
 
     if used_layered_cache {
         // Layered path: fix ownership + set up PATH
@@ -289,7 +316,7 @@ fn run_linux(
     } else {
         // Full provisioning (no cache hit at all)
         progress.start_provision();
-        let script = rootfs::build_provision_script(environments, shell, registry);
+        let script = rootfs::build_provision_script(environments, shell, registry, plugin_vars);
         let child = crate::commands::enter::run_command_captured(name, &script)?;
         let (exit_code, last_lines) = progress::monitor_provisioning(child, &progress, &script)?;
 
@@ -348,6 +375,7 @@ fn save_config(
     environments: &[String],
     share_display: bool,
     shell: &SandboxShell,
+    plugin_vars: &BTreeMap<String, String>,
 ) -> Result<(), IsolaError> {
     use crate::sandbox::rootfs;
 
@@ -363,6 +391,7 @@ fn save_config(
         share_display,
         shell: shell.clone(),
         devices: vec![],
+        plugin_vars: plugin_vars.clone(),
     };
     config.save()
 }

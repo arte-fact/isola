@@ -76,6 +76,7 @@ fn auto_create_from_local_config(
         .clone()
         .unwrap_or_else(SandboxShell::detect_from_host);
     let share_display = config.share_display.unwrap_or(false);
+    let plugin_vars = config.plugin_vars.clone().unwrap_or_default();
     let registry = PluginRegistry::load_for_project(Some(project_dir))?;
 
     eprintln!("Found .isola/config.yaml, creating sandbox '{name}'...");
@@ -88,6 +89,7 @@ fn auto_create_from_local_config(
         false,
         &shell,
         &registry,
+        &plugin_vars,
     )?;
 
     Ok(name)
