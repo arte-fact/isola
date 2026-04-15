@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use chrono::Utc;
 
-use crate::error::{IoContext, IsolaError};
+use crate::error::IsolaError;
 use crate::paths;
 use crate::plugin::{PluginLayer, PluginRegistry};
 use crate::sandbox::backend;

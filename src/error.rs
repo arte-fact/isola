@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
@@ -27,17 +26,6 @@ pub enum IsolaError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
-    /// IO error with operation + path context. Prefer this over `Io` so error
-    /// messages identify *which* file failed (ENOENT without a path is nearly
-    /// impossible to debug).
-    #[error("failed to {op} '{}': {source}", path.display())]
-    IoAt {
-        op: &'static str,
-        path: PathBuf,
-        #[source]
-        source: std::io::Error,
-    },
-
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
@@ -46,25 +34,6 @@ pub enum IsolaError {
 
     #[error("Plugin error: {0}")]
     PluginError(String),
-}
-
-/// Attach operation + path context to a `std::io::Result`.
-///
-/// Use this at every filesystem call site on the creation hot path so a bare
-/// ENOENT/EACCES turns into `"failed to <op> '<path>': No such file or
-/// directory (os error 2)"` instead of the pathless default.
-pub trait IoContext<T> {
-    fn io_ctx(self, op: &'static str, path: impl AsRef<Path>) -> Result<T, IsolaError>;
-}
-
-impl<T> IoContext<T> for std::io::Result<T> {
-    fn io_ctx(self, op: &'static str, path: impl AsRef<Path>) -> Result<T, IsolaError> {
-        self.map_err(|source| IsolaError::IoAt {
-            op,
-            path: path.as_ref().to_path_buf(),
-            source,
-        })
-    }
 }
 
 #[cfg(test)]
