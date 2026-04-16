@@ -3,6 +3,8 @@ use std::path::PathBuf;
 
 use chrono::Utc;
 
+#[cfg(target_os = "linux")]
+use crate::error::IoContext;
 use crate::error::IsolaError;
 use crate::paths;
 use crate::plugin::{PluginLayer, PluginRegistry};

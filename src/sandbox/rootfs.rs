@@ -1326,6 +1326,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn extract_rootfs_preserves_usrmerge_bin_symlink() {
         // Ubuntu 24.04 rootfs has `bin -> usr/bin` (usrmerge). The tarball
@@ -1411,6 +1412,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn ensure_rootfs_has_bash_ok_when_bash_resolves_via_symlink() {
         use std::os::unix::fs::symlink;
@@ -1422,6 +1424,7 @@ mod tests {
         ensure_rootfs_has_bash(root).unwrap();
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn ensure_rootfs_has_bash_errors_when_missing() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1430,6 +1433,7 @@ mod tests {
         assert!(msg.contains("no working /bin/bash"), "got: {msg}");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn copy_dir_recursive_preserves_broken_symlinks() {
         use std::os::unix::fs::symlink;
@@ -1473,6 +1477,7 @@ mod tests {
         assert!(real.is_file());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn provision_cache_script_uses_partial_then_rename() {
         let s = build_provision_cache_script();
@@ -1484,6 +1489,7 @@ mod tests {
         assert!(s.contains("set -eo pipefail"));
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn cache_script_excludes_virtual_filesystems_and_workspace() {
         // /proc /sys /dev /run are kernel virtual fs, /tmp would recurse into
@@ -1503,6 +1509,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn move_cache_tarball_errors_with_clear_message_when_missing() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1518,6 +1525,7 @@ mod tests {
         assert!(!dest.exists());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn move_cache_tarball_renames_into_place_creating_parent_dir() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1531,6 +1539,7 @@ mod tests {
         assert_eq!(std::fs::read(&dest).unwrap(), b"fake-tarball");
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn invalidate_envs_when_base_missing_moves_envs_to_uncached() {
         let mut status = LayerCacheStatus {
@@ -1548,6 +1557,7 @@ mod tests {
         assert_eq!(status.uncached, vec!["base", "rust", "nodejs"]);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn invalidate_envs_when_base_cached_keeps_envs_cached() {
         let mut status = LayerCacheStatus {
@@ -1562,6 +1572,7 @@ mod tests {
         assert_eq!(status.uncached, vec!["nodejs"]);
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn check_layer_cache_sorts_envs() {
         let r = registry();

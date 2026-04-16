@@ -1,3 +1,4 @@
+use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
@@ -26,6 +27,16 @@ pub enum IsolaError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// IO error with operation + path context.
+    #[error("failed to {op} '{}': {source}", path.display())]
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    IoAt {
+        op: &'static str,
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
     #[error("Configuration error: {0}")]
     ConfigError(String),
 
@@ -34,6 +45,22 @@ pub enum IsolaError {
 
     #[error("Plugin error: {0}")]
     PluginError(String),
+}
+
+/// Attach operation + path context to a `std::io::Result`.
+#[cfg_attr(target_os = "macos", allow(dead_code))]
+pub trait IoContext<T> {
+    fn io_ctx(self, op: &'static str, path: impl AsRef<Path>) -> Result<T, IsolaError>;
+}
+
+impl<T> IoContext<T> for std::io::Result<T> {
+    fn io_ctx(self, op: &'static str, path: impl AsRef<Path>) -> Result<T, IsolaError> {
+        self.map_err(|source| IsolaError::IoAt {
+            op,
+            path: path.as_ref().to_path_buf(),
+            source,
+        })
+    }
 }
 
 #[cfg(test)]
