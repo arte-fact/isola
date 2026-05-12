@@ -7,7 +7,7 @@ use crate::error::IsolaError;
 
 /// Find the bundled `isola-uidmap` setuid helper, or fall back to system
 /// `newuidmap`/`newgidmap` (from the `uidmap` package).
-fn find_uidmap_helper() -> Option<PathBuf> {
+pub fn find_uidmap_helper() -> Option<PathBuf> {
     let binary_name = "isola-uidmap";
 
     // 1. Look next to the current executable

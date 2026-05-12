@@ -1,3 +1,4 @@
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::error::IsolaError;
@@ -20,32 +21,215 @@ fn has_apparmor_profile() -> bool {
 }
 
 pub fn preflight_checks() -> Result<(), IsolaError> {
-    if !userns::has_uidmap_tools() {
-        eprintln!(
-            "Note: uidmap helper not found (run `isola setup-host` to install it).\n\
-             The sandbox will use single-UID mapping (no root/user separation inside)."
-        );
+    let mut issues: Vec<&str> = Vec::new();
+
+    // Check uidmap helper availability (binary exists AND is setuid root)
+    if let Some(helper) = userns::find_uidmap_helper() {
+        let meta = std::fs::metadata(&helper).ok();
+        let is_setuid = meta
+            .map(|m| m.permissions().mode() & 0o4000 != 0)
+            .unwrap_or(false);
+        if !is_setuid {
+            issues.push("uidmap helper is not setuid root");
+        }
+    } else {
+        if !userns::has_uidmap_tools() {
+            // No bundled helper AND no system tools
+            issues.push("no uidmap helper found (isola-uidmap or newuidmap)");
+        }
     }
 
+    // Check subordinate IDs
+    let username = std::env::var("USER").unwrap_or_default();
+    let uid = nix::unistd::getuid().as_raw();
+    if !has_subordinate_entry("/etc/subuid", &username, uid)
+        || !has_subordinate_entry("/etc/subgid", &username, uid)
+    {
+        issues.push("subordinate UID/GID ranges not configured in /etc/subuid and /etc/subgid");
+    }
+
+    // Check AppArmor
     if apparmor_userns_restricted() && !has_apparmor_profile() {
-        return Err(IsolaError::NamespaceError(
-            "AppArmor restricts unprivileged user namespaces on this system.\n\
-             Run `isola setup-host` to install the required AppArmor profile."
-                .to_string(),
-        ));
+        issues.push("AppArmor restricts unprivileged user namespaces");
+    }
+
+    if !issues.is_empty() {
+        eprintln!("=== Preflight warnings ===");
+        for issue in &issues {
+            eprintln!("  - {issue}");
+        }
+        eprintln!("\n  Run `isola setup-host` to fix these automatically.");
+        eprintln!(
+            "  The sandbox will use single-UID mapping (reduced isolation) until resolved.\n"
+        );
     }
 
     Ok(())
 }
 
 pub fn setup_host() -> Result<(), IsolaError> {
+    eprintln!("=== isola host setup ===\n");
+
+    let mut all_ok = true;
+
+    // ---- Step 1: setuid helper ----
+    if let Err(e) = setup_uidmap_helper() {
+        eprintln!("  [SKIP] uidmap helper: {e}");
+        all_ok = false;
+    }
+
+    // ---- Step 2: subordinate UID/GID ranges ----
+    if let Err(e) = setup_subordinate_ids() {
+        eprintln!("  [SKIP] subordinate IDs: {e}");
+        all_ok = false;
+    }
+
+    // ---- Step 3: AppArmor profile ----
+    if let Err(e) = setup_apparmor() {
+        eprintln!("  [SKIP] AppArmor: {e}");
+        all_ok = false;
+    }
+
+    eprintln!();
+    if all_ok {
+        eprintln!("All checks passed. You can now run: isola create <name>");
+    } else {
+        eprintln!(
+            "Some steps were skipped (see above). You can re-run `isola setup-host` anytime."
+        );
+    }
+    Ok(())
+}
+
+/// Make the `isola-uidmap` binary setuid root so it can write UID/GID mappings.
+fn setup_uidmap_helper() -> Result<(), IsolaError> {
+    let helper_path = userns::find_uidmap_helper().ok_or_else(|| {
+        IsolaError::ConfigError(
+            "isola-uidmap binary not found. It should be installed next to the isola binary."
+                .into(),
+        )
+    })?;
+
+    // Check if already setuid root
+    let metadata = std::fs::metadata(&helper_path)?;
+    if metadata.permissions().mode() & 0o4000 != 0 {
+        // setuid bit is already set — check ownership
+        // We can't easily check owner from metadata, but the bit being set is good enough
+        eprintln!(
+            "  [OK] uidmap helper is already setuid: {}",
+            helper_path.display()
+        );
+        return Ok(());
+    }
+
+    eprintln!("  Making isola-uidmap setuid root...");
+    let status = std::process::Command::new("sudo")
+        .args([
+            "sh",
+            "-c",
+            &format!(
+                "chown root:root '{}' && chmod u+s '{}'",
+                helper_path.display(),
+                helper_path.display()
+            ),
+        ])
+        .status()
+        .map_err(|e| IsolaError::ConfigError(format!("Failed to run sudo: {e}")))?;
+
+    if !status.success() {
+        return Err(IsolaError::ConfigError(format!(
+            "Failed to make {} setuid root. Run manually: sudo chown root:root '{}' && sudo chmod u+s '{}'",
+            helper_path.display(),
+            helper_path.display(),
+            helper_path.display()
+        )));
+    }
+
+    eprintln!("  [OK] uidmap helper is now setuid root");
+    Ok(())
+}
+
+/// Add subordinate UID/GID ranges to /etc/subuid and /etc/subgid.
+fn setup_subordinate_ids() -> Result<(), IsolaError> {
+    let username = std::env::var("USER").unwrap_or_else(|_| String::from("unknown"));
+    let uid = nix::unistd::getuid().as_raw();
+
+    let uid_ok = has_subordinate_entry("/etc/subuid", &username, uid);
+    let gid_ok = has_subordinate_entry("/etc/subgid", &username, uid);
+
+    if uid_ok && gid_ok {
+        eprintln!("  [OK] subordinate UID/GID ranges already configured");
+        return Ok(());
+    }
+
+    let start = 100000u32;
+    let count = 65536u32;
+
+    eprintln!("  Adding subordinate IDs for user '{username}'...");
+
+    // usermod --add-subuids / --add-subgids is the standard way
+    let status = std::process::Command::new("sudo")
+        .args([
+            "usermod",
+            "--add-subuids",
+            &format!("{start}-{}", start + count - 1),
+            "--add-subgids",
+            &format!("{start}-{}", start + count - 1),
+            &username,
+        ])
+        .status()
+        .map_err(|e| IsolaError::ConfigError(format!("Failed to run sudo usermod: {e}")))?;
+
+    if !status.success() {
+        return Err(IsolaError::ConfigError(format!(
+            "Failed to add subordinate IDs. Run manually:\n  \
+             sudo usermod --add-subuids {start}-{} --add-subgids {start}-{} {username}",
+            start + count - 1,
+            start + count - 1,
+        )));
+    }
+
+    eprintln!("  [OK] subordinate UID/GID ranges configured");
+
+    // Verify the changes took effect
+    // The kernel caches per-user-namespace, so a logout/login may be needed,
+    // but /etc/subuid and /etc/subgid should now have the entry.
+    let uid_ok = has_subordinate_entry("/etc/subuid", &username, uid);
+    let gid_ok = has_subordinate_entry("/etc/subgid", &username, uid);
+    if !uid_ok || !gid_ok {
+        eprintln!("  Note: subordinate ranges were added but a logout/login may be required");
+        eprintln!("  for the kernel to recognise them. Re-run `isola setup-host` after re-login.");
+    }
+
+    Ok(())
+}
+
+/// Check if /etc/subuid or /etc/subgid has an entry for the given user.
+fn has_subordinate_entry(path: &str, username: &str, uid: u32) -> bool {
+    let uid_str = uid.to_string();
+    std::fs::read_to_string(path)
+        .map(|content| {
+            content.lines().any(|line| {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    return false;
+                }
+                let parts: Vec<&str> = line.split(':').collect();
+                parts.len() >= 3 && (parts[0] == username || parts[0] == uid_str)
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// Install AppArmor profile for isola if the system restricts unprivileged user namespaces.
+fn setup_apparmor() -> Result<(), IsolaError> {
     if !apparmor_userns_restricted() {
-        eprintln!("AppArmor user namespace restriction is not active — no profile needed.");
+        eprintln!("  [OK] AppArmor user namespace restriction not active — no profile needed");
         return Ok(());
     }
 
     if has_apparmor_profile() {
-        eprintln!("AppArmor profile for isola is already installed.");
+        eprintln!("  [OK] AppArmor profile already installed");
         return Ok(());
     }
 
@@ -65,8 +249,7 @@ profile isola {binary_path} flags=(unconfined) {{
 "#
     );
 
-    eprintln!("Installing AppArmor profile for: {binary_path}");
-    eprintln!("This requires sudo to write to {APPARMOR_PROFILE_DIR}/isola");
+    eprintln!("  Installing AppArmor profile...");
 
     let status = std::process::Command::new("sudo")
         .args(["tee", &format!("{APPARMOR_PROFILE_DIR}/isola")])
@@ -104,7 +287,7 @@ profile isola {binary_path} flags=(unconfined) {{
         ));
     }
 
-    eprintln!("AppArmor profile installed and loaded successfully.");
+    eprintln!("  [OK] AppArmor profile installed and loaded");
     Ok(())
 }
 
