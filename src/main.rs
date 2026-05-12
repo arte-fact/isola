@@ -1,3 +1,4 @@
+mod backend;
 mod cli;
 mod commands;
 mod error;

@@ -174,7 +174,7 @@ echo "sandbox" | sudo -S <command>
 
 #[cfg(target_os = "linux")]
 /// Read the host's git user.name and user.email, returning a .gitconfig string if either is set.
-fn build_host_gitconfig() -> Option<String> {
+pub(crate) fn build_host_gitconfig() -> Option<String> {
     let name = std::process::Command::new("git")
         .args(["config", "--global", "user.name"])
         .output()
