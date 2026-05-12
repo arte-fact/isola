@@ -22,7 +22,7 @@ fn has_apparmor_profile() -> bool {
 pub fn preflight_checks() -> Result<(), IsolaError> {
     if !userns::has_uidmap_tools() {
         eprintln!(
-            "Note: newuidmap/newgidmap not found (install with: sudo apt install uidmap).\n\
+            "Note: uidmap helper not found (run `isola setup-host` to install it).\n\
              The sandbox will use single-UID mapping (no root/user separation inside)."
         );
     }
