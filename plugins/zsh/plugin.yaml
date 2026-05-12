@@ -1,6 +1,0 @@
-name: zsh
-description: "Zsh shell"
-version: "1.0.0"
-layer: shell
-provision:
-  script: install.sh

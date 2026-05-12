@@ -297,11 +297,7 @@ pub fn reprovision(name: &str, environments: &[String]) -> Result<(), IsolaError
     rootfs::post_setup_rootfs(&rootfs_path, name, environments)?;
 
     let script = rootfs::build_provision_script(environments);
-    eprintln!(
-        "Re-provisioning '{}': {}...",
-        name,
-        environments.join(", ")
-    );
+    eprintln!("Re-provisioning '{}': {}...", name, environments.join(", "));
     let exit_code = run_command(name, &script)?;
     if exit_code != 0 {
         return Err(IsolaError::ProvisionFailed(exit_code));
