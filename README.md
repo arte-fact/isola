@@ -130,6 +130,8 @@ paths:
 
 This is separate from — and complementary to — the provisioned-rootfs cache: the rootfs cache makes re-creating the *same* sandbox instant, while the package cache speeds up builds inside sandboxes and provisioning of *new* configurations.
 
+Clear the caches with `isola cache clean` (add `--all` to also drop the provisioned-rootfs caches). The apt cache is written by provisioning as in-namespace root, so removal goes through a user namespace — `cache clean` handles that for you.
+
 ## Sandbox layout
 
 ```

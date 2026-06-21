@@ -70,6 +70,9 @@ fn main() {
             clap_complete::generate(shell, &mut Cli::command(), "isola", &mut std::io::stdout());
             Ok(())
         }
+        Some(Commands::Cache { action }) => match action {
+            cli::CacheAction::Clean { all } => commands::cache::clean(all),
+        },
         None => commands::default::run(),
     };
 

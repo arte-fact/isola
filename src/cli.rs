@@ -80,4 +80,19 @@ pub enum Commands {
         /// Shell to generate completions for
         shell: Shell,
     },
+    /// Manage isola's caches
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum CacheAction {
+    /// Remove cached downloads (shared package caches; --all also clears rootfs caches)
+    Clean {
+        /// Also remove the provisioned-rootfs / layer caches
+        #[arg(long)]
+        all: bool,
+    },
 }

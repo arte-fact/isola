@@ -1,3 +1,4 @@
+pub mod cleanup;
 pub mod mounts;
 pub mod namespace;
 pub mod seccomp;

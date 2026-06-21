@@ -1,3 +1,4 @@
+pub mod cache;
 pub mod create;
 pub mod default;
 pub mod destroy;
