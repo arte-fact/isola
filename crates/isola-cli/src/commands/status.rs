@@ -1,7 +1,7 @@
-use crate::error::IsolaError;
-use crate::paths;
-use crate::sandbox::backend;
-use crate::sandbox::config::SandboxConfig;
+use isola_core::error::IsolaError;
+use isola_core::paths;
+use isola_core::sandbox::backend;
+use isola_core::sandbox::config::SandboxConfig;
 
 pub fn run(name: &str) -> Result<(), IsolaError> {
     let sandbox_dir = paths::sandbox_dir(name);

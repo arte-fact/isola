@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use crate::error::IsolaError;
-use crate::paths;
+use isola_core::error::IsolaError;
+use isola_core::paths;
 
 /// `isola cache clean [--all]` — remove cached downloads.
 ///
@@ -38,7 +38,7 @@ pub fn clean(all: bool) -> Result<(), IsolaError> {
     }
 
     #[cfg(target_os = "linux")]
-    crate::sandbox::linux::cleanup::remove_paths(existing)?;
+    isola_core::sandbox::linux::cleanup::remove_paths(existing)?;
 
     #[cfg(not(target_os = "linux"))]
     for p in &existing {

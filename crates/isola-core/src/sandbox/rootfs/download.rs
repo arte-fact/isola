@@ -11,9 +11,10 @@ const ROOTFS_FILENAME: &str = "ubuntu-base-24.04.4-base-amd64.tar.gz";
 const ROOTFS_SHA256SUMS_URL: &str =
     "https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/SHA256SUMS";
 
-/// Download and cache the base rootfs tarball, with a progress UI.
+/// Download and cache the base rootfs tarball, reporting progress to the given
+/// sink (the CLI renders a live UI; library callers can pass `&NoProgress`).
 pub fn ensure_rootfs_cached_with_progress(
-    progress: &crate::progress::CreationProgress,
+    progress: &dyn crate::ProgressReporter,
 ) -> Result<PathBuf, IsolaError> {
     let cache = paths::cache_dir();
     let cached_path = cache.join(ROOTFS_FILENAME);
@@ -34,7 +35,7 @@ pub fn ensure_rootfs_cached_with_progress(
     }
 
     let total_size = response.content_length().unwrap_or(0);
-    let mut dl = progress.start_download(total_size);
+    progress.start_step("Downloading base rootfs...");
 
     let mut reader = response;
     let mut file = std::fs::File::create(&cached_path).io_ctx("create", &cached_path)?;
@@ -47,9 +48,9 @@ pub fn ensure_rootfs_cached_with_progress(
         }
         std::io::Write::write_all(&mut file, &buf[..n]).io_ctx("write to", &cached_path)?;
         downloaded += n as u64;
-        dl.set_position(downloaded);
+        progress.download(downloaded, total_size);
     }
-    progress.finish_download();
+    progress.finish_step("Downloaded base rootfs");
 
     progress.start_step("Verifying checksum...");
     verify_rootfs_checksum(&cached_path)?;

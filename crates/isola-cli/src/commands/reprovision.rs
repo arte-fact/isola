@@ -1,6 +1,6 @@
-use crate::error::IsolaError;
-use crate::paths;
-use crate::sandbox::config::SandboxConfig;
+use isola_core::error::IsolaError;
+use isola_core::paths;
+use isola_core::sandbox::config::SandboxConfig;
 
 pub fn run(name: &str) -> Result<(), IsolaError> {
     let sandbox_dir = paths::sandbox_dir(name);
@@ -28,7 +28,7 @@ fn run_macos(
     environments: &[String],
     plugin_vars: &std::collections::BTreeMap<String, String>,
 ) -> Result<(), IsolaError> {
-    use crate::sandbox::backend;
+    use isola_core::sandbox::backend;
     let b = backend::create_backend();
     b.write_sandbox_files(name, environments)?;
 
@@ -49,9 +49,9 @@ fn run_linux(
     config: &SandboxConfig,
     environments: &[String],
 ) -> Result<(), IsolaError> {
-    use crate::plugin::PluginRegistry;
     use crate::progress::{self, CreationProgress};
-    use crate::sandbox::rootfs;
+    use isola_core::plugin::PluginRegistry;
+    use isola_core::sandbox::rootfs;
 
     let registry = PluginRegistry::load()?;
     let rootfs_path = paths::rootfs_dir(name);
@@ -88,7 +88,7 @@ fn run_linux(
         };
 
         progress.start_step(&format!("Provisioning {layer_name}..."));
-        let child = crate::commands::enter::run_command_captured(name, &script)?;
+        let child = isola_core::sandbox::exec::run_command_captured(name, &script)?;
         let (exit_code, last_lines) = progress::monitor_provisioning(child, &progress, &script)?;
         if exit_code != 0 {
             progress.finish_error(exit_code, &last_lines);
@@ -101,7 +101,7 @@ fn run_linux(
         if layer_name == "base" {
             let res = (|| -> Result<(), IsolaError> {
                 let cache_script = rootfs::build_base_cache_script();
-                let child = crate::commands::enter::run_command_captured(name, &cache_script)?;
+                let child = isola_core::sandbox::exec::run_command_captured(name, &cache_script)?;
                 let (exit_code, _) =
                     progress::monitor_provisioning(child, &progress, &cache_script)?;
                 if exit_code != 0 {
@@ -128,7 +128,7 @@ fn run_linux(
     // Fixup PATH + ownership
     progress.start_step("Fixing ownership...");
     let fixup = rootfs::build_layered_fixup_script(environments, &registry);
-    let exit_code = crate::commands::enter::run_command(name, &fixup)?;
+    let exit_code = isola_core::sandbox::exec::run_command(name, &fixup)?;
     if exit_code != 0 {
         return Err(IsolaError::ProvisionFailed(exit_code));
     }

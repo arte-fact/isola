@@ -1,9 +1,9 @@
 use std::path::Path;
 
-use crate::error::IsolaError;
-use crate::paths;
-use crate::plugin::PluginRegistry;
-use crate::sandbox::config::{LocalConfig, SandboxConfig, SandboxShell};
+use isola_core::error::IsolaError;
+use isola_core::paths;
+use isola_core::plugin::PluginRegistry;
+use isola_core::sandbox::config::{LocalConfig, SandboxConfig, SandboxShell};
 
 /// Default command: auto-detect sandbox for cwd, or launch setup wizard
 pub fn run() -> Result<(), IsolaError> {

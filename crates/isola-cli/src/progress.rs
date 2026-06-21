@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 
 use console::style;
 
-use crate::error::IsolaError;
-use crate::sandbox::linux::namespace::SandboxChild;
+use isola_core::error::IsolaError;
+use isola_core::sandbox::linux::namespace::SandboxChild;
 
 const TICK_STRINGS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -140,23 +140,6 @@ impl CreationProgress {
         eprintln!("  {} {msg}", style("✓").green());
     }
 
-    pub fn start_download(&self, total_bytes: u64) -> DownloadProgress {
-        self.inner.stop_tick();
-        {
-            let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.drawn_lines = 0;
-        }
-        DownloadProgress {
-            total_bytes,
-            inner: Arc::clone(&self.inner),
-        }
-    }
-
-    pub fn finish_download(&self) {
-        self.inner.stop_tick();
-        eprintln!("  {} Downloaded rootfs", style("✓").green());
-    }
-
     pub fn start_provision(&self) {
         self.inner.stop_tick();
         {
@@ -248,44 +231,6 @@ impl CreationProgress {
         }
     }
 }
-
-pub struct DownloadProgress {
-    total_bytes: u64,
-    inner: Arc<ProgressInner>,
-}
-
-impl DownloadProgress {
-    pub fn set_position(&mut self, pos: u64) {
-        let pct = if self.total_bytes > 0 {
-            (pos as f64 / self.total_bytes as f64 * 100.0) as u64
-        } else {
-            0
-        };
-        let mb_done = pos as f64 / 1_048_576.0;
-        let mb_total = self.total_bytes as f64 / 1_048_576.0;
-
-        let msg = if self.total_bytes > 0 {
-            let filled = (pct as usize * 20 / 100).min(20);
-            let empty = 20 - filled;
-            format!(
-                "Downloading rootfs [{}{}] {:.1}/{:.1} MB ({pct}%)",
-                "━".repeat(filled),
-                " ".repeat(empty),
-                mb_done,
-                mb_total,
-            )
-        } else {
-            format!("Downloading rootfs... {:.1} MB", mb_done)
-        };
-
-        {
-            let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
-            state.spinner_msg = msg;
-        }
-        self.inner.render();
-    }
-}
-
 /// Count expected provisioning phases by counting `>>> ` markers in the script.
 pub fn count_provision_phases(script: &str) -> usize {
     script
@@ -356,6 +301,28 @@ pub(crate) fn format_duration(d: Duration) -> String {
         format!("{secs}s")
     } else {
         format!("{}m {}s", secs / 60, secs % 60)
+    }
+}
+
+/// Let the core engine drive this progress UI via the `ProgressReporter` trait.
+/// The one-time rootfs download is shown as a percentage on the spinner line.
+impl isola_core::ProgressReporter for CreationProgress {
+    fn start_step(&self, msg: &str) {
+        CreationProgress::start_step(self, msg);
+    }
+    fn finish_step(&self, msg: &str) {
+        CreationProgress::finish_step(self, msg);
+    }
+    fn download(&self, downloaded: u64, total: u64) {
+        let msg = if total > 0 {
+            format!(
+                "Downloading base rootfs… {}%",
+                downloaded.saturating_mul(100) / total
+            )
+        } else {
+            format!("Downloading base rootfs… {} MiB", downloaded / 1_048_576)
+        };
+        CreationProgress::start_step(self, &msg);
     }
 }
 

@@ -1,0 +1,26 @@
+[package]
+name = "isola-cli"
+description = "Command-line interface for isola."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "isola"
+path = "src/main.rs"
+
+[dependencies]
+isola-core.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+inquire.workspace = true
+indicatif.workspace = true
+console.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix.workspace = true

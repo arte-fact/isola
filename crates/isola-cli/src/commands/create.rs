@@ -4,12 +4,12 @@ use std::path::PathBuf;
 use chrono::Utc;
 
 #[cfg(target_os = "linux")]
-use crate::error::IoContext;
-use crate::error::IsolaError;
-use crate::paths;
-use crate::plugin::{PluginLayer, PluginRegistry};
-use crate::sandbox::backend;
-use crate::sandbox::config::{SandboxConfig, SandboxShell};
+use isola_core::error::IoContext;
+use isola_core::error::IsolaError;
+use isola_core::paths;
+use isola_core::plugin::{PluginLayer, PluginRegistry};
+use isola_core::sandbox::backend;
+use isola_core::sandbox::config::{SandboxConfig, SandboxShell};
 
 /// Create a sandbox with all project-layer plugins plus auto-detected user-layer plugins (CLI shorthand).
 /// If `plugins` is non-empty, those plugins are installed instead of all project-layer plugins.
@@ -72,6 +72,11 @@ pub struct CreateRequest<'a> {
 
 pub fn run_with_envs(req: CreateRequest) -> Result<(), IsolaError> {
     validate_name(req.name)?;
+
+    // Before touching the engine, offer to run one-time host setup if AppArmor
+    // is blocking user namespaces (the library half just reports it as an error).
+    #[cfg(target_os = "linux")]
+    super::setup_host::ensure_userns_allowed()?;
 
     let b = backend::create_backend();
     b.preflight_checks()?;
@@ -151,7 +156,7 @@ fn run_linux(req: CreateRequest) -> Result<(), IsolaError> {
         plugin_vars,
     } = req;
     use crate::progress::{self, CreationProgress};
-    use crate::sandbox::rootfs;
+    use isola_core::sandbox::rootfs;
 
     let progress = CreationProgress::new(name);
     progress.finish_step("Preflight checks passed");
@@ -266,7 +271,7 @@ fn run_linux(req: CreateRequest) -> Result<(), IsolaError> {
         // Layered path: fix ownership + set up PATH
         progress.start_step("Fixing ownership...");
         let script = rootfs::build_layered_fixup_script(environments, registry);
-        let exit_code = crate::commands::enter::run_command(name, &script)?;
+        let exit_code = isola_core::sandbox::exec::run_command(name, &script)?;
         if exit_code != 0 {
             return Err(IsolaError::ProvisionFailed(exit_code));
         }
@@ -282,7 +287,7 @@ fn run_linux(req: CreateRequest) -> Result<(), IsolaError> {
         // Legacy monolithic cache was used
         progress.start_step("Fixing ownership...");
         let script = rootfs::build_fixup_script();
-        let exit_code = crate::commands::enter::run_command(name, &script)?;
+        let exit_code = isola_core::sandbox::exec::run_command(name, &script)?;
         if exit_code != 0 {
             return Err(IsolaError::ProvisionFailed(exit_code));
         }
@@ -292,7 +297,7 @@ fn run_linux(req: CreateRequest) -> Result<(), IsolaError> {
         // Full provisioning (no cache hit at all)
         progress.start_provision();
         let script = rootfs::build_provision_script(environments, shell, registry, plugin_vars);
-        let child = crate::commands::enter::run_command_captured(name, &script)?;
+        let child = isola_core::sandbox::exec::run_command_captured(name, &script)?;
         let (exit_code, last_lines) = progress::monitor_provisioning(child, &progress, &script)?;
 
         if exit_code != 0 {
@@ -335,7 +340,7 @@ fn provision_one_layer(
     script: &str,
     progress: &crate::progress::CreationProgress,
 ) -> Result<(), IsolaError> {
-    let child = crate::commands::enter::run_command_captured(name, script)?;
+    let child = isola_core::sandbox::exec::run_command_captured(name, script)?;
     let (exit_code, last_lines) = crate::progress::monitor_provisioning(child, progress, script)?;
     if exit_code != 0 {
         progress.finish_error(exit_code, &last_lines);
@@ -355,7 +360,7 @@ fn cache_one_layer(
     plugin_vars: &BTreeMap<String, String>,
     progress: &crate::progress::CreationProgress,
 ) {
-    use crate::sandbox::rootfs;
+    use isola_core::sandbox::rootfs;
     if layer_name == "base" {
         progress.start_step("Caching base layer...");
         let res =
@@ -382,7 +387,7 @@ fn run_cache_script_and_move(
     progress: &crate::progress::CreationProgress,
     move_out: impl FnOnce() -> Result<(), IsolaError>,
 ) -> Result<(), IsolaError> {
-    let child = crate::commands::enter::run_command_captured(name, script)?;
+    let child = isola_core::sandbox::exec::run_command_captured(name, script)?;
     let (exit_code, _) = crate::progress::monitor_provisioning(child, progress, script)?;
     if exit_code != 0 {
         return Err(IsolaError::ProvisionFailed(exit_code));
@@ -399,7 +404,7 @@ fn save_config(
     shell: &SandboxShell,
     plugin_vars: &BTreeMap<String, String>,
 ) -> Result<(), IsolaError> {
-    use crate::sandbox::rootfs;
+    use isola_core::sandbox::rootfs;
 
     let config = SandboxConfig {
         name: name.to_string(),

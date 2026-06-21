@@ -4,10 +4,10 @@ use std::path::PathBuf;
 
 use inquire::{Confirm, MultiSelect, Select, Text};
 
-use crate::error::IsolaError;
-use crate::plugin::{PluginLayer, PluginRegistry};
-use crate::sandbox::backend;
-use crate::sandbox::config::{LocalConfig, SandboxShell};
+use isola_core::error::IsolaError;
+use isola_core::plugin::{PluginLayer, PluginRegistry};
+use isola_core::sandbox::backend;
+use isola_core::sandbox::config::{LocalConfig, SandboxShell};
 
 #[derive(Clone)]
 struct PluginChoice {

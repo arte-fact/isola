@@ -18,7 +18,7 @@ impl LinuxBackend {
     /// Prepend plugin `paths.bin` directories to the PATH entry of `env_vars`
     /// so plugin binaries are runnable by name in interactive and exec sessions.
     fn add_plugin_bins_to_path(env_vars: &mut [String], environments: &[String]) {
-        let bins = crate::commands::enter::plugin_bin_paths(environments);
+        let bins = crate::sandbox::exec::plugin_bin_paths(environments);
         if bins.is_empty() {
             return;
         }
@@ -34,7 +34,7 @@ impl LinuxBackend {
     /// environments, creating the host-side directories so the in-child
     /// bind-mount succeeds.
     fn cache_mounts_for(environments: &[String]) -> Vec<(String, String)> {
-        let mounts = crate::commands::enter::collect_cache_mounts(environments);
+        let mounts = crate::sandbox::exec::collect_cache_mounts(environments);
         for (host, _) in &mounts {
             let _ = std::fs::create_dir_all(host);
         }
@@ -98,10 +98,18 @@ impl SandboxBackend for LinuxBackend {
             );
         }
 
-        // If AppArmor blocks unprivileged user namespaces and there's no profile
-        // yet, offer to run the one-time host setup now instead of erroring out.
+        // AppArmor (Ubuntu 24.04+) blocks unprivileged user namespaces unless a
+        // profile grants them. The library reports this as an error; the CLI
+        // layer offers to install the profile before reaching here.
         #[cfg(target_os = "linux")]
-        crate::commands::setup_host::ensure_userns_allowed()?;
+        if crate::host::apparmor_userns_restricted() && !crate::host::has_apparmor_profile() {
+            return Err(IsolaError::NamespaceError(
+                "AppArmor restricts unprivileged user namespaces on this system.\n\
+                 Run `isola setup-host` (or install an AppArmor userns profile for \
+                 your binary)."
+                    .to_string(),
+            ));
+        }
 
         Ok(())
     }
@@ -121,7 +129,7 @@ impl SandboxBackend for LinuxBackend {
         let config = crate::sandbox::config::SandboxConfig::load(name)?;
 
         // Collect plugin-declared host bind-mounts
-        let host_mounts = crate::commands::enter::collect_host_mounts(&config.environments);
+        let host_mounts = crate::sandbox::exec::collect_host_mounts(&config.environments);
 
         let mut env_vars = Self::build_env_vars(true);
         env_vars.push(format!("ISOLA_SANDBOX={}", config.name));
@@ -171,7 +179,7 @@ impl SandboxBackend for LinuxBackend {
         }
 
         let config = crate::sandbox::config::SandboxConfig::load(name)?;
-        let host_mounts = crate::commands::enter::collect_host_mounts(&config.environments);
+        let host_mounts = crate::sandbox::exec::collect_host_mounts(&config.environments);
 
         let mut env_vars = Self::build_env_vars(true);
         env_vars.push(format!("ISOLA_SANDBOX={}", name));

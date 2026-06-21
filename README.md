@@ -37,7 +37,7 @@ isola                 # wizard → pick tools → drops you in a sandbox shell
 ## Install
 
 ```bash
-cargo install --path .          # builds and installs the `isola` binary
+cargo install --path crates/isola-cli          # builds and installs the `isola` binary
 ```
 
 **Linux (x86_64)** — uses user namespaces, no privileges needed at runtime.
@@ -61,7 +61,7 @@ falls back to a coarser single-UID mapping that still works.
 
 ```bash
 brew install lima
-cargo install --path .
+cargo install --path crates/isola-cli
 ```
 
 ## Quick start

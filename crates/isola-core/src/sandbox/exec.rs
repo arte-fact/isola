@@ -1,27 +1,8 @@
-use std::path::PathBuf;
+//! Low-level sandbox execution and per-environment resource resolution: build
+//! the env vars / mounts / devices for a session and run commands inside a
+//! sandbox. This is the engine surface the CLI and library consumers build on.
 
 use crate::error::IsolaError;
-use crate::sandbox::backend;
-use crate::sandbox::config::SandboxConfig;
-
-pub fn run(
-    name: &str,
-    workspace: Option<PathBuf>,
-    cli_devices: Vec<String>,
-) -> Result<i32, IsolaError> {
-    let config = SandboxConfig::load(name)?;
-    let workspace = workspace.or(config.workspace);
-
-    let mut devices = collect_devices(&config.environments, &config.devices);
-    for d in cli_devices {
-        if !devices.contains(&d) {
-            devices.push(d);
-        }
-    }
-
-    let b = backend::create_backend();
-    b.enter_interactive(name, false, workspace.as_deref(), devices)
-}
 
 /// Collect host_mount entries from the given environments' plugins.
 #[cfg(target_os = "linux")]

@@ -1,5 +1,6 @@
 pub mod backend;
 pub mod config;
+pub mod exec;
 pub mod rootfs;
 
 #[cfg(target_os = "linux")]

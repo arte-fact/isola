@@ -1,8 +1,8 @@
 use crate::commands::status::{dir_size, format_size};
-use crate::error::IsolaError;
-use crate::paths;
-use crate::sandbox::backend;
-use crate::sandbox::config::SandboxConfig;
+use isola_core::error::IsolaError;
+use isola_core::paths;
+use isola_core::sandbox::backend;
+use isola_core::sandbox::config::SandboxConfig;
 
 pub fn run() -> Result<(), IsolaError> {
     let sandboxes_dir = paths::sandboxes_dir();

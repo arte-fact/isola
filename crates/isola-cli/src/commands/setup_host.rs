@@ -1,24 +1,7 @@
-#[cfg(target_os = "linux")]
-use std::path::Path;
-
-use crate::error::IsolaError;
+use isola_core::error::IsolaError;
 
 #[cfg(target_os = "linux")]
 const APPARMOR_PROFILE_DIR: &str = "/etc/apparmor.d";
-
-/// Check if AppArmor user namespace restriction is active
-#[cfg(target_os = "linux")]
-pub fn apparmor_userns_restricted() -> bool {
-    std::fs::read_to_string("/proc/sys/kernel/apparmor_restrict_unprivileged_userns")
-        .map(|s| s.trim() == "1")
-        .unwrap_or(false)
-}
-
-/// Check if isola already has an AppArmor profile installed
-#[cfg(target_os = "linux")]
-pub fn has_apparmor_profile() -> bool {
-    Path::new(APPARMOR_PROFILE_DIR).join("isola").exists()
-}
 
 /// Ensure unprivileged user namespaces are usable before creating a sandbox.
 ///
@@ -33,7 +16,7 @@ pub fn ensure_userns_allowed() -> Result<(), IsolaError> {
     use std::io::IsTerminal;
 
     // Not blocked (or already fixed) → nothing to do.
-    if !apparmor_userns_restricted() || has_apparmor_profile() {
+    if !isola_core::host::apparmor_userns_restricted() || isola_core::host::has_apparmor_profile() {
         return Ok(());
     }
 
@@ -64,7 +47,7 @@ pub fn ensure_userns_allowed() -> Result<(), IsolaError> {
     }
 
     run()?;
-    if !has_apparmor_profile() {
+    if !isola_core::host::has_apparmor_profile() {
         return Err(blocked());
     }
 
@@ -79,19 +62,6 @@ pub fn ensure_userns_allowed() -> Result<(), IsolaError> {
          Please re-run your command."
     );
     std::process::exit(0);
-}
-
-/// Generate AppArmor profile content for the isola binary at the given path
-#[cfg(target_os = "linux")]
-pub(crate) fn generate_profile(binary_path: &str) -> String {
-    format!(
-        r#"abi <abi/4.0>,
-
-profile isola {binary_path} flags=(unconfined) {{
-  userns,
-}}
-"#
-    )
 }
 
 /// Find the isola binary path (the currently running executable)
@@ -249,17 +219,17 @@ fn setup_subordinate_ids() -> Result<(), IsolaError> {
 /// Install and load the AppArmor profile if unprivileged userns is restricted.
 #[cfg(target_os = "linux")]
 fn setup_apparmor() -> Result<(), IsolaError> {
-    if !apparmor_userns_restricted() {
+    if !isola_core::host::apparmor_userns_restricted() {
         eprintln!("  [OK] AppArmor userns restriction not active — no profile needed");
         return Ok(());
     }
-    if has_apparmor_profile() {
+    if isola_core::host::has_apparmor_profile() {
         eprintln!("  [OK] AppArmor profile already installed");
         return Ok(());
     }
 
     let binary_path = find_binary_path()?;
-    let profile = generate_profile(&binary_path);
+    let profile = isola_core::host::apparmor_profile_for(&binary_path);
     eprintln!("  Installing AppArmor profile for {binary_path} (requires sudo)...");
 
     let status = std::process::Command::new("sudo")
@@ -297,45 +267,4 @@ fn setup_apparmor() -> Result<(), IsolaError> {
     }
     eprintln!("  [OK] AppArmor profile installed and loaded");
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(target_os = "linux")]
-    use super::*;
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn profile_contains_binary_path() {
-        let profile = generate_profile("/usr/local/bin/isola");
-        assert!(profile.contains("/usr/local/bin/isola"));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn profile_contains_userns_permission() {
-        let profile = generate_profile("/usr/local/bin/isola");
-        assert!(profile.contains("userns,"));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn profile_contains_abi_declaration() {
-        let profile = generate_profile("/usr/local/bin/isola");
-        assert!(profile.contains("abi <abi/4.0>"));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn profile_with_spaces_in_path() {
-        let profile = generate_profile("/home/my user/bin/isola");
-        assert!(profile.contains("/home/my user/bin/isola"));
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn profile_has_unconfined_flag() {
-        let profile = generate_profile("/usr/bin/isola");
-        assert!(profile.contains("flags=(unconfined)"));
-    }
 }

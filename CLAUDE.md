@@ -6,16 +6,15 @@ VM on macOS. See `README.md` and `docs/` for the user-facing docs.
 ## Build & Test
 
 ```
-cargo build                        # debug build
-cargo build --release              # release build
-cargo test                         # run all tests
-cargo test <module>::tests         # run tests for a specific module
-cargo clippy --all-targets -- -D warnings   # lint (must be clean, no #[allow])
-cargo fmt                          # format
-cargo install --path .             # install to ~/.cargo/bin
+cargo build --workspace                       # debug build
+cargo build --workspace --release             # release build
+cargo test --workspace                        # run all tests
+cargo clippy --workspace --all-targets -- -D warnings   # lint (must be clean, no #[allow])
+cargo fmt                                      # format
+cargo install --path crates/isola-cli         # install the `isola` binary to ~/.cargo/bin
 ```
 
-Run `cargo fmt` and `cargo clippy --all-targets -- -D warnings` before committing.
+Run `cargo fmt` and `cargo clippy --workspace --all-targets -- -D warnings` before committing.
 The codebase is kept clippy-clean with **no bare `#[allow]`** — resolve warnings
 at the cause (e.g. `#[cfg(test)]` for test-only items, `#[cfg(target_os = …)]`
 for platform-specific code), not by suppressing them.

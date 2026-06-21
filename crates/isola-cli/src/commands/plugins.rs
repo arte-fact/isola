@@ -1,5 +1,5 @@
-use crate::error::IsolaError;
-use crate::plugin::{PluginLayer, PluginRegistry, PluginSource};
+use isola_core::error::IsolaError;
+use isola_core::plugin::{PluginLayer, PluginRegistry, PluginSource};
 
 /// `isola plugins` — list every available plugin by layer, with its source.
 ///
