@@ -215,7 +215,7 @@ over it.
 
 ```toml
 [dependencies]
-isola-core = { git = "https://github.com/arte-fact/isola", tag = "v1.1.0", package = "isola-core" }
+isola-core = "1.1"
 ```
 
 ```rust

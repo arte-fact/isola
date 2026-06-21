@@ -14,10 +14,14 @@ Ubuntu userland with only a workspace directory shared back to the host.
 
 ```toml
 [dependencies]
-isola-core = { git = "https://github.com/arte-fact/isola", tag = "v1.1.0", package = "isola-core" }
+isola-core = "1.1"
 ```
 
-(Publish to crates.io later for `isola-core = "1"`.)
+Or pin to a git tag during development:
+
+```toml
+isola-core = { git = "https://github.com/arte-fact/isola", tag = "v1.1.0", package = "isola-core" }
+```
 
 ## Quick start
 
