@@ -57,8 +57,9 @@ ln -sf /usr/bin/fdfind /usr/local/bin/fd 2>/dev/null || true
 ln -sf /usr/bin/batcat /usr/local/bin/bat 2>/dev/null || true
 "#;
 
-// --- CLAUDE.md language-specific fragments ---
+// --- CLAUDE.md language-specific fragments (macOS/Lima only) ---
 
+#[cfg(target_os = "macos")]
 const CLAUDE_MD_RUST: &str = r#"
 ## Rust
 - Build: `cargo build`, Test: `cargo test`, Lint: `cargo clippy -- -D warnings`, Format: `cargo fmt`
@@ -72,6 +73,7 @@ const CLAUDE_MD_RUST: &str = r#"
 - Run `cargo fmt` and `cargo clippy` before committing
 "#;
 
+#[cfg(target_os = "macos")]
 const CLAUDE_MD_NODEJS: &str = r#"
 ## Node.js
 - Use ES modules (`import`/`export`), not CommonJS (`require`)
@@ -84,6 +86,7 @@ const CLAUDE_MD_NODEJS: &str = r#"
 - Never commit `node_modules/` or `.env` files
 "#;
 
+#[cfg(target_os = "macos")]
 const CLAUDE_MD_PYTHON_UV: &str = r#"
 ## Python
 - Use `uv` exclusively for package management — never use pip, pip-tools, poetry, or conda
@@ -96,6 +99,7 @@ const CLAUDE_MD_PYTHON_UV: &str = r#"
 - Never use bare `python` or `pip` commands — always go through `uv run`
 "#;
 
+#[cfg(target_os = "macos")]
 const CLAUDE_MD_GO: &str = r#"
 ## Go
 - Build: `go build ./...`, Test: `go test ./...`, Lint: `golangci-lint run` (if installed)
@@ -108,7 +112,8 @@ const CLAUDE_MD_GO: &str = r#"
 - Standard project layout: `cmd/` for entrypoints, `internal/` for private packages, `pkg/` for public libraries
 "#;
 
-/// Build CLAUDE.md content based on selected environments
+/// Build CLAUDE.md content based on selected environments (macOS/Lima only).
+#[cfg(target_os = "macos")]
 pub fn build_claude_md(environments: &[String], isolation_desc: &str) -> String {
     let mut md = format!(
         r#"# Sandbox Environment

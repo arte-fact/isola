@@ -63,6 +63,13 @@ impl<T> IoContext<T> for std::io::Result<T> {
     }
 }
 
+#[cfg(target_os = "linux")]
+impl From<nix::Error> for IsolaError {
+    fn from(e: nix::Error) -> Self {
+        IsolaError::NamespaceError(e.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,12 +148,5 @@ mod tests {
         let e = result.io_ctx("open", "/some/path").unwrap_err();
         let src = std::error::Error::source(&e).expect("IoAt must expose source");
         assert!(src.to_string().contains("denied"));
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl From<nix::Error> for IsolaError {
-    fn from(e: nix::Error) -> Self {
-        IsolaError::NamespaceError(e.to_string())
     }
 }

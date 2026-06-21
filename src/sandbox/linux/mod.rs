@@ -9,7 +9,6 @@ use std::path::Path;
 use crate::error::IsolaError;
 use crate::paths;
 use crate::sandbox::backend::SandboxBackend;
-use crate::sandbox::rootfs;
 
 use namespace::{SandboxExec, enter_sandbox};
 
@@ -115,20 +114,6 @@ impl SandboxBackend for LinuxBackend {
         Ok(())
     }
 
-    fn create_environment(&self, name: &str, _workspace: Option<&Path>) -> Result<(), IsolaError> {
-        // On Linux, the full create flow is handled by commands::create which uses
-        // the progress UI and layered caching. This method provides a simple fallback.
-        let rootfs_path = paths::rootfs_dir(name);
-        std::fs::create_dir_all(&rootfs_path)?;
-        Ok(())
-    }
-
-    fn write_sandbox_files(&self, name: &str, environments: &[String]) -> Result<(), IsolaError> {
-        let rootfs_path = paths::rootfs_dir(name);
-        let registry = crate::plugin::PluginRegistry::load()?;
-        rootfs::post_setup_rootfs(&rootfs_path, name, environments, &registry, true)
-    }
-
     fn enter_interactive(
         &self,
         name: &str,
@@ -172,32 +157,6 @@ impl SandboxBackend for LinuxBackend {
             capture_output: false,
             devices,
             cache_mounts: Self::cache_mounts_for(&config.environments),
-        };
-
-        enter_sandbox(exec)
-    }
-
-    fn run_command(&self, name: &str, command: &str) -> Result<i32, IsolaError> {
-        let rootfs = paths::rootfs_dir(name);
-        if !rootfs.exists() {
-            return Err(IsolaError::SandboxNotFound(name.to_string()));
-        }
-
-        let env_vars = Self::build_env_vars(false);
-
-        let exec = SandboxExec {
-            rootfs: rootfs.to_string_lossy().to_string(),
-            exec_path: "/bin/bash".to_string(),
-            exec_args: vec!["bash".to_string(), "-c".to_string(), command.to_string()],
-            env_vars,
-            workspace_host: None,
-            host_mounts: vec![],
-            share_display: false,
-            run_as_uid: None,
-            multi_uid: true,
-            capture_output: false,
-            devices: vec![],
-            cache_mounts: crate::commands::enter::apt_provision_cache(),
         };
 
         enter_sandbox(exec)
@@ -312,14 +271,6 @@ impl SandboxBackend for LinuxBackend {
 
     fn backend_name(&self) -> &'static str {
         "linux-namespace"
-    }
-
-    fn rootfs_url(&self) -> &'static str {
-        rootfs::rootfs_url()
-    }
-
-    fn isolation_description(&self) -> &'static str {
-        "an isolated Linux sandbox (user namespace + PID namespace + mount namespace)"
     }
 }
 

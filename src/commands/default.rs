@@ -84,16 +84,16 @@ pub(crate) fn create_from_local_config(
 
     eprintln!("Creating sandbox '{name}' from .isola/config.yaml...");
 
-    crate::commands::create::run_with_envs(
-        &name,
-        Some(project_dir.to_path_buf()),
-        &environments,
+    crate::commands::create::run_with_envs(crate::commands::create::CreateRequest {
+        name: &name,
+        workspace: Some(project_dir.to_path_buf()),
+        environments: &environments,
         share_display,
-        false,
-        &shell,
-        &registry,
-        &plugin_vars,
-    )?;
+        no_cache: false,
+        shell: &shell,
+        registry: &registry,
+        plugin_vars: &plugin_vars,
+    })?;
 
     Ok(name)
 }

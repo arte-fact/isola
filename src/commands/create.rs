@@ -45,78 +45,66 @@ pub fn run(
         }
     }
 
-    run_with_envs(
+    run_with_envs(CreateRequest {
         name,
         workspace,
-        &envs,
-        false,
+        environments: &envs,
+        share_display: false,
         no_cache,
-        &SandboxShell::default(),
-        &registry,
-        &BTreeMap::new(),
-    )
+        shell: &SandboxShell::default(),
+        registry: &registry,
+        plugin_vars: &BTreeMap::new(),
+    })
 }
 
 /// Create a sandbox with selected environments
 #[allow(clippy::too_many_arguments)]
-pub fn run_with_envs(
-    name: &str,
-    workspace: Option<PathBuf>,
-    environments: &[String],
-    share_display: bool,
-    #[cfg_attr(target_os = "macos", allow(unused_variables))] no_cache: bool,
-    shell: &SandboxShell,
-    registry: &PluginRegistry,
-    plugin_vars: &BTreeMap<String, String>,
-) -> Result<(), IsolaError> {
-    validate_name(name)?;
+/// Everything needed to create a sandbox, bundled so the platform-specific
+/// create functions take a single argument instead of a long parameter list.
+pub struct CreateRequest<'a> {
+    pub name: &'a str,
+    pub workspace: Option<PathBuf>,
+    pub environments: &'a [String],
+    pub share_display: bool,
+    pub no_cache: bool,
+    pub shell: &'a SandboxShell,
+    pub registry: &'a PluginRegistry,
+    pub plugin_vars: &'a BTreeMap<String, String>,
+}
+
+pub fn run_with_envs(req: CreateRequest) -> Result<(), IsolaError> {
+    validate_name(req.name)?;
 
     let b = backend::create_backend();
     b.preflight_checks()?;
 
-    let sandbox_dir = paths::sandbox_dir(name);
+    let sandbox_dir = paths::sandbox_dir(req.name);
     if sandbox_dir.exists() {
-        return Err(IsolaError::SandboxExists(name.to_string()));
+        return Err(IsolaError::SandboxExists(req.name.to_string()));
     }
 
     #[cfg(target_os = "linux")]
     {
-        run_linux(
-            name,
-            workspace,
-            environments,
-            share_display,
-            no_cache,
-            shell,
-            registry,
-            plugin_vars,
-        )
+        run_linux(req)
     }
 
     #[cfg(target_os = "macos")]
     {
-        run_macos(
-            name,
-            workspace,
-            environments,
-            share_display,
-            shell,
-            registry,
-            plugin_vars,
-        )
+        run_macos(req)
     }
 }
 
 #[cfg(target_os = "macos")]
-fn run_macos(
-    name: &str,
-    workspace: Option<PathBuf>,
-    environments: &[String],
-    share_display: bool,
-    shell: &SandboxShell,
-    _registry: &PluginRegistry,
-    plugin_vars: &BTreeMap<String, String>,
-) -> Result<(), IsolaError> {
+fn run_macos(req: CreateRequest) -> Result<(), IsolaError> {
+    let CreateRequest {
+        name,
+        workspace,
+        environments,
+        share_display,
+        shell,
+        plugin_vars,
+        ..
+    } = req;
     let b = backend::create_backend();
 
     let workspace = workspace
@@ -153,16 +141,17 @@ fn run_macos(
 }
 
 #[cfg(target_os = "linux")]
-fn run_linux(
-    name: &str,
-    workspace: Option<PathBuf>,
-    environments: &[String],
-    share_display: bool,
-    no_cache: bool,
-    shell: &SandboxShell,
-    registry: &PluginRegistry,
-    plugin_vars: &BTreeMap<String, String>,
-) -> Result<(), IsolaError> {
+fn run_linux(req: CreateRequest) -> Result<(), IsolaError> {
+    let CreateRequest {
+        name,
+        workspace,
+        environments,
+        share_display,
+        no_cache,
+        shell,
+        registry,
+        plugin_vars,
+    } = req;
     use crate::progress::{self, CreationProgress};
     use crate::sandbox::rootfs;
 

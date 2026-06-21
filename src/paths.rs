@@ -28,10 +28,13 @@ pub fn cache_dir() -> PathBuf {
     isola_home().join("cache")
 }
 
+/// Lima session directory — only the macOS backend persists session state here.
+#[cfg(target_os = "macos")]
 pub fn session_dir() -> PathBuf {
     isola_home().join("session")
 }
 
+#[cfg(target_os = "macos")]
 pub fn session_credentials() -> PathBuf {
     session_dir().join("credentials.json")
 }

@@ -315,8 +315,8 @@ impl PluginRegistry {
         self.plugins.iter().find(|p| p.manifest.name == name)
     }
 
-    /// List all available plugin names.
-    #[allow(dead_code)]
+    /// List all available plugin names. Used by tests to assert the bundled set.
+    #[cfg(test)]
     pub fn available_names(&self) -> Vec<&str> {
         self.plugins
             .iter()
@@ -324,8 +324,8 @@ impl PluginRegistry {
             .collect()
     }
 
-    /// List all available plugins.
-    #[allow(dead_code)]
+    /// List all available plugins. Used by tests to walk the bundled set.
+    #[cfg(test)]
     pub fn available_plugins(&self) -> &[Plugin] {
         &self.plugins
     }
