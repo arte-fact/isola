@@ -1,7 +1,26 @@
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+
 use crate::error::IsolaError;
 
-/// Check whether newuidmap and newgidmap are available on this system.
-pub fn has_uidmap_tools() -> bool {
+/// Find the bundled `isola-uidmap` setuid-root helper next to the isola binary.
+///
+/// Returns the path only if it exists **and** is setuid root — a non-setuid
+/// helper cannot write multi-line UID maps, so in that case we return `None`
+/// and fall back to the system `newuidmap`/`newgidmap` tools rather than letting
+/// an unusable bundled helper shadow them.
+pub fn find_uidmap_helper() -> Option<PathBuf> {
+    let candidate = std::env::current_exe().ok()?.parent()?.join("isola-uidmap");
+    let meta = std::fs::metadata(&candidate).ok()?;
+    if meta.permissions().mode() & 0o4000 != 0 {
+        Some(candidate)
+    } else {
+        None
+    }
+}
+
+/// Whether the system `newuidmap`/`newgidmap` tools are both available.
+fn system_uidmap_tools() -> bool {
     ["newuidmap", "newgidmap"].iter().all(|bin| {
         std::process::Command::new("which")
             .arg(bin)
@@ -11,6 +30,51 @@ pub fn has_uidmap_tools() -> bool {
             .map(|s| s.success())
             .unwrap_or(false)
     })
+}
+
+/// Whether a usable multi-UID mapping tool is available: either the bundled
+/// setuid `isola-uidmap` helper, or the system `newuidmap`/`newgidmap` tools.
+pub fn has_uidmap_tools() -> bool {
+    find_uidmap_helper().is_some() || system_uidmap_tools()
+}
+
+/// Run the uidmap helper for one map type. `args` is `[uid|gid, pid, inside,
+/// outside, count, ...]`. Prefers the bundled setuid `isola-uidmap`, falling
+/// back to system `newuidmap`/`newgidmap` (which take the same args without the
+/// leading type token).
+fn run_uidmap_helper(args: &[String]) -> Result<(), IsolaError> {
+    if let Some(helper) = find_uidmap_helper() {
+        let status = std::process::Command::new(&helper).args(args).status();
+        if let Ok(s) = status
+            && s.success()
+        {
+            return Ok(());
+        }
+        // Bundled helper failed — fall through to system tools if present.
+    }
+
+    let map_type = &args[0]; // "uid" or "gid"
+    let binary = if map_type == "uid" {
+        "newuidmap"
+    } else {
+        "newgidmap"
+    };
+    let system_args: Vec<&str> = args[1..].iter().map(|s| s.as_str()).collect();
+    let status = std::process::Command::new(binary)
+        .args(&system_args)
+        .status()
+        .map_err(|e| {
+            IsolaError::NamespaceError(format!(
+                "Failed to run {binary}: {e}. Install with: sudo apt install uidmap, \
+                 or run `isola setup-host` to enable the bundled helper."
+            ))
+        })?;
+    if !status.success() {
+        return Err(IsolaError::NamespaceError(format!(
+            "{binary} failed. Check /etc/sub{map_type} configuration."
+        )));
+    }
+    Ok(())
 }
 
 /// Parse /etc/subuid or /etc/subgid for the current user, return (start, count)
@@ -62,64 +126,43 @@ pub fn write_id_mappings(child_pid: i32, multi_uid: bool) -> Result<bool, IsolaE
         //   Inside 1000    → host_uid               [1]
         //   Inside 1001    → sub_uid_start+1000     [remaining]
         let uid_remaining = sub_uid_count.saturating_sub(1000).min(64535);
-        let uid_status = std::process::Command::new("newuidmap")
-            .args([
-                &pid_str,
-                "0",
-                &sub_uid_start.to_string(),
-                "1",
-                "1",
-                &(sub_uid_start + 1).to_string(),
-                "999",
-                "1000",
-                &uid.to_string(),
-                "1",
-                "1001",
-                &(sub_uid_start + 1000).to_string(),
-                &uid_remaining.to_string(),
-            ])
-            .status()
-            .map_err(|e| {
-                IsolaError::NamespaceError(format!(
-                    "Failed to run newuidmap: {e}. Install with: sudo apt install uidmap"
-                ))
-            })?;
-
-        if !uid_status.success() {
-            return Err(IsolaError::NamespaceError(
-                "newuidmap failed. Check /etc/subuid configuration.".into(),
-            ));
-        }
+        let uid_args: Vec<String> = vec![
+            "uid".into(),
+            pid_str.clone(),
+            "0".into(),
+            sub_uid_start.to_string(),
+            "1".into(),
+            "1".into(),
+            (sub_uid_start + 1).to_string(),
+            "999".into(),
+            "1000".into(),
+            uid.to_string(),
+            "1".into(),
+            "1001".into(),
+            (sub_uid_start + 1000).to_string(),
+            uid_remaining.to_string(),
+        ];
+        run_uidmap_helper(&uid_args)?;
 
         let gid_remaining = sub_gid_count.saturating_sub(1000).min(64535);
-        let gid_status = std::process::Command::new("newgidmap")
-            .args([
-                &pid_str,
-                "0",
-                &sub_gid_start.to_string(),
-                "1",
-                "1",
-                &(sub_gid_start + 1).to_string(),
-                "999",
-                "1000",
-                &gid.to_string(),
-                "1",
-                "1001",
-                &(sub_gid_start + 1000).to_string(),
-                &gid_remaining.to_string(),
-            ])
-            .status()
-            .map_err(|e| {
-                IsolaError::NamespaceError(format!(
-                    "Failed to run newgidmap: {e}. Install with: sudo apt install uidmap"
-                ))
-            })?;
+        let gid_args: Vec<String> = vec![
+            "gid".into(),
+            pid_str.clone(),
+            "0".into(),
+            sub_gid_start.to_string(),
+            "1".into(),
+            "1".into(),
+            (sub_gid_start + 1).to_string(),
+            "999".into(),
+            "1000".into(),
+            gid.to_string(),
+            "1".into(),
+            "1001".into(),
+            (sub_gid_start + 1000).to_string(),
+            gid_remaining.to_string(),
+        ];
+        run_uidmap_helper(&gid_args)?;
 
-        if !gid_status.success() {
-            return Err(IsolaError::NamespaceError(
-                "newgidmap failed. Check /etc/subgid configuration.".into(),
-            ));
-        }
         return Ok(true);
     }
 
