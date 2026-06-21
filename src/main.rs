@@ -6,6 +6,8 @@ mod plugin;
 #[cfg(target_os = "linux")]
 mod progress;
 mod sandbox;
+#[cfg(target_os = "linux")]
+mod sha256;
 
 use clap::{CommandFactory, Parser};
 use cli::{Cli, Commands};
