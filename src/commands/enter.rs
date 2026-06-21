@@ -70,6 +70,27 @@ pub fn collect_cache_mounts(environments: &[String]) -> Vec<(String, String)> {
     mounts
 }
 
+/// Directories from the given plugins' `paths.bin` declarations, to prepend to
+/// the sandbox PATH so plugin binaries are runnable by name in `enter`/`exec`
+/// (not just an interactive `.bashrc`-sourcing shell).
+#[cfg(target_os = "linux")]
+pub fn plugin_bin_paths(environments: &[String]) -> Vec<String> {
+    let Ok(registry) = crate::plugin::PluginRegistry::load() else {
+        return vec![];
+    };
+    let mut bins = Vec::new();
+    for env in environments {
+        if let Some(plugin) = registry.get(env) {
+            for b in &plugin.manifest.paths.bin {
+                if !bins.contains(b) {
+                    bins.push(b.clone());
+                }
+            }
+        }
+    }
+    bins
+}
+
 /// Shared apt archives cache mounted during provisioning so downloaded `.deb`s
 /// are reused across sandboxes. apt is part of the base (not a plugin) and runs
 /// as in-namespace root, so this is built in rather than plugin-declared.

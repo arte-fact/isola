@@ -85,6 +85,8 @@ pub enum Commands {
         #[command(subcommand)]
         action: CacheAction,
     },
+    /// List available plugins (bundled, user, project)
+    Plugins,
 }
 
 #[derive(Subcommand)]

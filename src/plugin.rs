@@ -56,6 +56,18 @@ pub struct PluginManifest {
     pub auto_detect: Option<PluginAutoDetect>,
     #[serde(default)]
     pub prompts: Vec<PluginPrompt>,
+    /// For `layer: shell` plugins: how the sandbox launches this shell.
+    pub shell: Option<ShellSpec>,
+}
+
+/// Shell metadata for a `layer: shell` plugin, so the shell is fully
+/// plugin-defined (no hardcoded list).
+#[derive(Debug, Clone, Deserialize)]
+pub struct ShellSpec {
+    /// Absolute path to the shell binary inside the sandbox (e.g. "/usr/bin/fish").
+    pub bin: String,
+    /// Host `$SHELL` basename that should pre-select this shell in the wizard.
+    pub detect: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -203,7 +215,11 @@ const BUNDLED_PLUGINS: &[BundledPlugin] = &[
         manifest_yaml: include_str!("../plugins/php/plugin.yaml"),
         install_script: Some(include_str!("../plugins/php/install.sh")),
     },
-    // Shell-layer: installed by shell selection
+    // Shell-layer: selected as the sandbox shell
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/bash/plugin.yaml"),
+        install_script: None,
+    },
     BundledPlugin {
         manifest_yaml: include_str!("../plugins/fish/plugin.yaml"),
         install_script: Some(include_str!("../plugins/fish/install.sh")),
@@ -420,10 +436,36 @@ mod tests {
     }
 
     #[test]
+    fn shell_plugins_declare_bin_and_are_registry_sourced() {
+        let registry = PluginRegistry::load().unwrap();
+        // The shell menu is built from this list — bash is a plugin too.
+        let shells: Vec<&str> = registry
+            .plugins_for_layer(PluginLayer::Shell)
+            .iter()
+            .map(|p| p.manifest.name.as_str())
+            .collect();
+        for s in ["bash", "fish", "zsh"] {
+            assert!(
+                shells.contains(&s),
+                "shell '{s}' should be a shell-layer plugin"
+            );
+            let spec = registry.get(s).unwrap().manifest.shell.as_ref().unwrap();
+            assert!(
+                spec.bin.starts_with('/'),
+                "shell '{s}' needs an absolute bin"
+            );
+        }
+    }
+
+    #[test]
     fn bundled_plugins_have_install_scripts() {
         let registry = PluginRegistry::load().unwrap();
         for plugin in registry.available_plugins() {
-            if plugin.manifest.layer != PluginLayer::User {
+            // User-layer plugins are config-only; a shell plugin may also be
+            // install-free (bash ships with the base).
+            let install_free = plugin.manifest.layer == PluginLayer::User
+                || (plugin.manifest.layer == PluginLayer::Shell && plugin.manifest.shell.is_some());
+            if !install_free {
                 assert!(
                     plugin.install_script.is_some(),
                     "plugin '{}' (layer: {:?}) should have install script",

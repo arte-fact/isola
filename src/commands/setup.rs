@@ -35,26 +35,30 @@ pub fn run() -> Result<(), IsolaError> {
         .and_then(|p| std::fs::canonicalize(&p).ok())
         .unwrap_or_else(|| PathBuf::from("."));
 
-    // 1. Shell selection (auto-detected from host)
+    // 1. Shell — sourced from the shell-layer plugins (no hardcoded list)
     let detected_shell = SandboxShell::detect_from_host();
-    let shell_options = vec!["bash", "fish", "zsh"];
-    let default_idx = shell_options
+    let mut shell_names: Vec<String> = registry
+        .plugins_for_layer(PluginLayer::Shell)
+        .into_iter()
+        .map(|p| p.manifest.name.clone())
+        .collect();
+    if shell_names.is_empty() {
+        shell_names.push("bash".to_string());
+    }
+    let default_idx = shell_names
         .iter()
-        .position(|s| *s == detected_shell.name())
+        .position(|s| s == detected_shell.name())
         .unwrap_or(0);
-    let shell_choice = Select::new("Shell:", shell_options)
+    let shell_refs: Vec<&str> = shell_names.iter().map(|s| s.as_str()).collect();
+    let shell_choice = Select::new("Shell:", shell_refs)
         .with_starting_cursor(default_idx)
         .with_help_message(&format!(
-            "Detected: {} — will be installed and configured in the sandbox",
+            "Detected: {} — installed and configured in the sandbox",
             detected_shell.name()
         ))
         .prompt()
         .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
-    let shell = match shell_choice {
-        "fish" => SandboxShell::Fish,
-        "zsh" => SandboxShell::Zsh,
-        _ => SandboxShell::Bash,
-    };
+    let shell = SandboxShell::new(shell_choice);
 
     // 2. Display sharing (auto-detected)
     let has_display = std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok();
@@ -138,11 +142,13 @@ pub fn run() -> Result<(), IsolaError> {
         .map(|e| e.name.clone())
         .collect();
 
-    // Auto-add shell plugin based on shell choice
-    match shell {
-        SandboxShell::Fish => env_ids.push("fish".to_string()),
-        SandboxShell::Zsh => env_ids.push("zsh".to_string()),
-        SandboxShell::Bash => {}
+    // Install the selected shell plugin when it has an install script
+    // (fish/zsh do; bash is part of the base and has none).
+    if let Some(p) = registry.get(shell.name())
+        && p.install_script.is_some()
+        && !env_ids.contains(&shell.name().to_string())
+    {
+        env_ids.push(shell.name().to_string());
     }
 
     if env_ids.is_empty() {

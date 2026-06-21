@@ -16,6 +16,21 @@ use namespace::{SandboxExec, enter_sandbox};
 pub struct LinuxBackend;
 
 impl LinuxBackend {
+    /// Prepend plugin `paths.bin` directories to the PATH entry of `env_vars`
+    /// so plugin binaries are runnable by name in interactive and exec sessions.
+    fn add_plugin_bins_to_path(env_vars: &mut [String], environments: &[String]) {
+        let bins = crate::commands::enter::plugin_bin_paths(environments);
+        if bins.is_empty() {
+            return;
+        }
+        for v in env_vars.iter_mut() {
+            if let Some(rest) = v.strip_prefix("PATH=") {
+                *v = format!("PATH={}:{rest}", bins.join(":"));
+                return;
+            }
+        }
+    }
+
     /// Shared package caches (from plugin `cache:` declarations) for these
     /// environments, creating the host-side directories so the in-child
     /// bind-mount succeeds.
@@ -142,6 +157,8 @@ impl SandboxBackend for LinuxBackend {
             env_vars.push("XAUTHORITY=/home/sandbox/.Xauthority".to_string());
         }
 
+        Self::add_plugin_bins_to_path(&mut env_vars, &config.environments);
+
         let exec = SandboxExec {
             rootfs: rootfs.to_string_lossy().to_string(),
             exec_path: config.shell.bin_path().to_string(),
@@ -215,6 +232,8 @@ impl SandboxBackend for LinuxBackend {
             }
             env_vars.push("XAUTHORITY=/home/sandbox/.Xauthority".to_string());
         }
+
+        Self::add_plugin_bins_to_path(&mut env_vars, &config.environments);
 
         let exec = SandboxExec {
             rootfs: rootfs.to_string_lossy().to_string(),

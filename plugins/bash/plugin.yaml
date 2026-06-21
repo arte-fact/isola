@@ -1,0 +1,8 @@
+name: bash
+description: "Bash shell (default)"
+version: "1.0.0"
+layer: shell
+provision: {}
+shell:
+  bin: /bin/bash
+  detect: bash

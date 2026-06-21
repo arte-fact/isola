@@ -4,3 +4,6 @@ version: "1.0.0"
 layer: shell
 provision:
   script: install.sh
+shell:
+  bin: /usr/bin/fish
+  detect: fish

@@ -73,6 +73,7 @@ fn main() {
         Some(Commands::Cache { action }) => match action {
             cli::CacheAction::Clean { all } => commands::cache::clean(all),
         },
+        Some(Commands::Plugins) => commands::plugins::list(),
         None => commands::default::run(),
     };
 

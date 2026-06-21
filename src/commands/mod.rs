@@ -5,6 +5,7 @@ pub mod destroy;
 pub mod enter;
 pub mod exec;
 pub mod list;
+pub mod plugins;
 pub mod reprovision;
 pub mod setup;
 pub mod setup_host;

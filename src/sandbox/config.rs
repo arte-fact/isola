@@ -8,60 +8,103 @@ use serde::{Deserialize, Serialize};
 use crate::error::IsolaError;
 use crate::paths;
 
-#[derive(Default, Serialize, Deserialize, Clone, Debug, PartialEq)]
-#[serde(rename_all = "lowercase")]
-pub enum SandboxShell {
-    #[default]
-    Bash,
-    Fish,
-    Zsh,
+/// The sandbox shell, identified by its plugin name (e.g. "bash", "fish").
+/// Shell behavior (binary path, host detection) is defined by the `shell:`
+/// block of the corresponding `layer: shell` plugin — there is no hardcoded
+/// list. Serializes as the bare name for backward-compatible configs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SandboxShell(String);
+
+impl Default for SandboxShell {
+    fn default() -> Self {
+        Self("bash".to_string())
+    }
 }
 
 impl fmt::Display for SandboxShell {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.name())
+        write!(f, "{}", self.0)
+    }
+}
+
+impl Serialize for SandboxShell {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for SandboxShell {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        Ok(Self(String::deserialize(d)?))
     }
 }
 
 impl SandboxShell {
-    pub fn bin_path(&self) -> &str {
-        match self {
-            SandboxShell::Bash => "/bin/bash",
-            SandboxShell::Fish => "/usr/bin/fish",
-            SandboxShell::Zsh => "/usr/bin/zsh",
-        }
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+    pub fn bash() -> Self {
+        Self("bash".to_string())
+    }
+    #[cfg(test)]
+    pub fn fish() -> Self {
+        Self("fish".to_string())
+    }
+    #[cfg(test)]
+    pub fn zsh() -> Self {
+        Self("zsh".to_string())
     }
 
     pub fn name(&self) -> &str {
-        match self {
-            SandboxShell::Bash => "bash",
-            SandboxShell::Fish => "fish",
-            SandboxShell::Zsh => "zsh",
+        &self.0
+    }
+
+    /// Shell binary path inside the sandbox, resolved from the shell plugin's
+    /// `shell.bin`, falling back to common locations.
+    pub fn bin_path(&self) -> String {
+        if let Ok(reg) = crate::plugin::PluginRegistry::load()
+            && let Some(p) = reg.get(&self.0)
+            && let Some(sh) = &p.manifest.shell
+        {
+            return sh.bin.clone();
+        }
+        match self.0.as_str() {
+            "bash" => "/bin/bash".to_string(),
+            other => format!("/usr/bin/{other}"),
         }
     }
 
+    /// Pre-select the shell whose plugin matches the host `$SHELL`; else bash.
     pub fn detect_from_host() -> Self {
-        std::env::var("SHELL")
-            .ok()
-            .and_then(|s| {
-                let basename = std::path::Path::new(&s).file_name()?.to_str()?.to_string();
-                match basename.as_str() {
-                    "fish" => Some(SandboxShell::Fish),
-                    "zsh" => Some(SandboxShell::Zsh),
-                    "bash" => Some(SandboxShell::Bash),
-                    _ => None,
-                }
-            })
-            .unwrap_or(SandboxShell::Bash)
+        let basename = std::env::var("SHELL").ok().and_then(|s| {
+            std::path::Path::new(&s)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(String::from)
+        });
+        if let Some(b) = basename {
+            if let Ok(reg) = crate::plugin::PluginRegistry::load()
+                && reg
+                    .plugins_for_layer(crate::plugin::PluginLayer::Shell)
+                    .iter()
+                    .any(|p| {
+                        p.manifest.name == b
+                            || p.manifest.shell.as_ref().and_then(|s| s.detect.as_deref())
+                                == Some(b.as_str())
+                    })
+            {
+                return Self(b);
+            }
+            if ["bash", "fish", "zsh"].contains(&b.as_str()) {
+                return Self(b);
+            }
+        }
+        Self::bash()
     }
 
     #[cfg(target_os = "linux")]
     pub fn login_args(&self) -> Vec<String> {
-        match self {
-            SandboxShell::Bash => vec!["bash".to_string(), "-l".to_string()],
-            SandboxShell::Fish => vec!["fish".to_string(), "-l".to_string()],
-            SandboxShell::Zsh => vec!["zsh".to_string(), "-l".to_string()],
-        }
+        vec![self.0.clone(), "-l".to_string()]
     }
 }
 
@@ -191,7 +234,7 @@ mod tests {
             workspace: Some(std::path::PathBuf::from("/home/user/project")),
             environments: vec!["rust".to_string(), "nodejs".to_string()],
             share_display: false,
-            shell: SandboxShell::Fish,
+            shell: SandboxShell::fish(),
             devices: vec![],
             plugin_vars: BTreeMap::new(),
         };
@@ -204,7 +247,7 @@ mod tests {
         assert_eq!(deserialized.rootfs_url, config.rootfs_url);
         assert_eq!(deserialized.workspace, config.workspace);
         assert_eq!(deserialized.environments, config.environments);
-        assert_eq!(deserialized.shell, SandboxShell::Fish);
+        assert_eq!(deserialized.shell, SandboxShell::fish());
     }
 
     #[test]
@@ -221,7 +264,7 @@ mod tests {
         assert!(config.workspace.is_none());
         assert!(config.environments.is_empty());
         // Backward compat: missing fields get defaults
-        assert_eq!(config.shell, SandboxShell::Bash);
+        assert_eq!(config.shell, SandboxShell::bash());
     }
 
     #[test]
@@ -241,27 +284,27 @@ mod tests {
     #[test]
     fn shell_detect_from_env() {
         // Just test the enum methods directly
-        assert_eq!(SandboxShell::Bash.bin_path(), "/bin/bash");
-        assert_eq!(SandboxShell::Fish.bin_path(), "/usr/bin/fish");
-        assert_eq!(SandboxShell::Zsh.bin_path(), "/usr/bin/zsh");
-        assert_eq!(SandboxShell::Bash.name(), "bash");
-        assert_eq!(SandboxShell::Fish.name(), "fish");
-        assert_eq!(SandboxShell::Zsh.name(), "zsh");
+        assert_eq!(SandboxShell::bash().bin_path(), "/bin/bash");
+        assert_eq!(SandboxShell::fish().bin_path(), "/usr/bin/fish");
+        assert_eq!(SandboxShell::zsh().bin_path(), "/usr/bin/zsh");
+        assert_eq!(SandboxShell::bash().name(), "bash");
+        assert_eq!(SandboxShell::fish().name(), "fish");
+        assert_eq!(SandboxShell::zsh().name(), "zsh");
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn shell_login_args() {
         assert_eq!(
-            SandboxShell::Bash.login_args(),
+            SandboxShell::bash().login_args(),
             vec!["bash".to_string(), "-l".to_string()]
         );
         assert_eq!(
-            SandboxShell::Fish.login_args(),
+            SandboxShell::fish().login_args(),
             vec!["fish".to_string(), "-l".to_string()]
         );
         assert_eq!(
-            SandboxShell::Zsh.login_args(),
+            SandboxShell::zsh().login_args(),
             vec!["zsh".to_string(), "-l".to_string()]
         );
     }
@@ -270,7 +313,7 @@ mod tests {
     fn local_config_round_trip() {
         let config = LocalConfig {
             environments: Some(vec!["rust".to_string(), "nodejs".to_string()]),
-            shell: Some(SandboxShell::Fish),
+            shell: Some(SandboxShell::fish()),
             share_display: None,
             devices: None,
             plugin_vars: None,
@@ -283,7 +326,7 @@ mod tests {
             deserialized.environments,
             Some(vec!["rust".to_string(), "nodejs".to_string()])
         );
-        assert_eq!(deserialized.shell, Some(SandboxShell::Fish));
+        assert_eq!(deserialized.shell, Some(SandboxShell::fish()));
     }
 
     #[test]
@@ -318,7 +361,7 @@ mod tests {
 
         let config = LocalConfig {
             environments: Some(vec!["go".to_string()]),
-            shell: Some(SandboxShell::Zsh),
+            shell: Some(SandboxShell::zsh()),
             share_display: None,
             devices: None,
             plugin_vars: None,
@@ -327,7 +370,7 @@ mod tests {
         config.save(&dir).unwrap();
         let loaded = LocalConfig::load(&dir).unwrap().unwrap();
         assert_eq!(loaded.environments, Some(vec!["go".to_string()]));
-        assert_eq!(loaded.shell, Some(SandboxShell::Zsh));
+        assert_eq!(loaded.shell, Some(SandboxShell::zsh()));
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -359,7 +402,11 @@ mod tests {
 
     #[test]
     fn shell_all_variants_have_bin_path() {
-        for shell in &[SandboxShell::Bash, SandboxShell::Fish, SandboxShell::Zsh] {
+        for shell in &[
+            SandboxShell::bash(),
+            SandboxShell::fish(),
+            SandboxShell::zsh(),
+        ] {
             let path = shell.bin_path();
             assert!(
                 path.starts_with('/'),
@@ -371,7 +418,11 @@ mod tests {
 
     #[test]
     fn shell_all_variants_have_name() {
-        for shell in &[SandboxShell::Bash, SandboxShell::Fish, SandboxShell::Zsh] {
+        for shell in &[
+            SandboxShell::bash(),
+            SandboxShell::fish(),
+            SandboxShell::zsh(),
+        ] {
             let name = shell.name();
             assert!(!name.is_empty(), "name for {:?} should not be empty", shell);
         }

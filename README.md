@@ -87,6 +87,8 @@ isola exec <name> -- <cmd...>      # Run a command inside a sandbox
 isola status <name>                # Show sandbox status
 isola reprovision <name>           # Re-run provisioning scripts
 isola list                         # List all sandboxes
+isola plugins                      # List available plugins (bundled, user, project)
+isola cache clean [--all]          # Clear shared package (and rootfs) caches
 isola destroy <name>               # Delete a sandbox
 isola completions <shell>          # Generate shell completions (bash, zsh, fish, etc.)
 isola setup-host                   # Install AppArmor profile (Linux/Ubuntu only, one-time)
@@ -104,6 +106,39 @@ During setup you can choose which toolchains to provision (none selected by defa
 | `go`          | Latest Go release                            |
 
 Base packages (git, curl, build-essential, ripgrep, fd, bat, etc.) are always installed.
+
+## Plugins
+
+Everything selectable is a plugin — toolchains, host-config imports, **and the shells themselves**. A plugin is a directory with a `plugin.yaml` manifest (plus an optional `install.sh`). Run `isola plugins` to list what's available and where each comes from.
+
+Plugins are discovered from three sources, later overriding earlier **by name**:
+
+1. **bundled** (shipped with isola)
+2. **user** — `~/.isola/plugins/<name>/`
+3. **project** — `<project>/.isola/plugins/<name>/`
+
+Three layers: `project` (install software), `user` (config-only, imported from the host, auto-detected), and `shell` (a selectable shell — `bash`/`fish`/`zsh` are just plugins; drop in another and it appears in the menu).
+
+A minimal custom plugin — drop it in `~/.isola/plugins/cowsay/`:
+
+```yaml
+# plugin.yaml
+name: cowsay
+description: "cowsay — talking ASCII cow"
+version: "1.0.0"
+layer: project
+provision:
+  script: install.sh        # run as root during provisioning
+  verify: "cowsay it-works" # sanity check; sees paths.bin
+paths:
+  bin: [/usr/games]         # added to PATH for enter, exec, and verify
+```
+```bash
+# install.sh
+apt-get install -y --no-install-recommends cowsay
+```
+
+Then `isola create demo --plugins cowsay` and `isola exec demo -- cowsay hi`. Manifests can also declare `copy`/`host_copy`/`host_mount`/`device`/`cache` paths, host `auto_detect` hints (user layer), interactive `prompts` (exported as env vars before install), and `shell: {bin, detect}` for shell plugins.
 
 ## Shared package caches
 
