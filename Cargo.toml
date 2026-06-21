@@ -2,6 +2,9 @@
 name = "isola"
 version = "0.1.0"
 edition = "2024"
+description = "Persistent, isolated developer sandboxes — no Docker, no root."
+repository = "https://github.com/arte-fact/isola"
+readme = "README.md"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
