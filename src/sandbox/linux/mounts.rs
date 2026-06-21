@@ -26,6 +26,7 @@ pub fn setup_mounts(
     host_mounts: &[(String, String, bool)],
     share_display: bool,
     devices: &[String],
+    cache_mounts: &[(String, String)],
 ) -> Result<(), IsolaError> {
     let none: Option<&str> = None;
 
@@ -266,6 +267,28 @@ pub fn setup_mounts(
         {
             eprintln!("warning: could not remount {from} read-only: {e}");
         }
+    }
+
+    // 13b. Shared package-manager caches (plugin `cache:` declarations). Each is
+    // a host directory bind-mounted at an absolute sandbox path so build tools
+    // reuse downloads across sandboxes. The host directory is created by the
+    // backend before clone(); skip silently if it is missing.
+    for (host_src, sandbox_dest) in cache_mounts {
+        let src = Path::new(host_src);
+        if !src.is_dir() {
+            continue;
+        }
+        let rel = sandbox_dest.strip_prefix('/').unwrap_or(sandbox_dest);
+        let target = rootfs.join(rel);
+        std::fs::create_dir_all(&target)?;
+        do_mount(
+            &format!("cache {sandbox_dest}"),
+            Some(host_src),
+            &target,
+            none,
+            MsFlags::MS_BIND | MsFlags::MS_REC,
+            none,
+        )?;
     }
 
     // 14. Display sharing (X11/Wayland) when requested

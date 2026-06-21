@@ -9,3 +9,8 @@ paths:
   bin:
     - /usr/local/go/bin
   copy: []
+  cache:
+    - name: go-mod
+      to: /home/sandbox/go/pkg/mod
+    - name: go-build
+      to: /home/sandbox/.cache/go-build

@@ -105,6 +105,28 @@ During setup you can choose which toolchains to provision (none selected by defa
 
 Base packages (git, curl, build-essential, ripgrep, fd, bat, etc.) are always installed.
 
+## Shared package caches
+
+Toolchain plugins share a per-package-manager download cache across all sandboxes, so `cargo build`, `npm install`, `go build`, and `uv sync` reuse what was already downloaded instead of fetching it again in every sandbox:
+
+| Plugin | Shared cache (host) | Mounted at |
+|--------|---------------------|------------|
+| `rust` | `~/.isola/cache/pkg/cargo` | `~/.cargo/registry` |
+| `nodejs` | `~/.isola/cache/pkg/npm` | `~/.npm` |
+| `go` | `~/.isola/cache/pkg/{go-mod,go-build}` | `~/go/pkg/mod`, `~/.cache/go-build` |
+| `python-uv` | `~/.isola/cache/pkg/uv` | `~/.cache/uv` |
+
+These are bind-mounted at the tool's default cache location, so they work with no configuration inside the sandbox. The cache is declared per plugin via a `cache:` block in `plugin.yaml`, so your own plugins can opt in:
+
+```yaml
+paths:
+  cache:
+    - name: cargo                          # pool at ~/.isola/cache/pkg/cargo
+      to: /home/sandbox/.cargo/registry    # mount point inside the sandbox
+```
+
+This is separate from — and complementary to — the provisioned-rootfs cache: the rootfs cache makes re-creating the *same* sandbox instant, while the package cache speeds up builds inside sandboxes and provisioning of *new* configurations.
+
 ## Sandbox layout
 
 ```

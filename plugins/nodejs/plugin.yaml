@@ -8,3 +8,6 @@ provision:
 paths:
   bin: []
   copy: []
+  cache:
+    - name: npm
+      to: /home/sandbox/.npm

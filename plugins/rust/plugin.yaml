@@ -13,3 +13,6 @@ paths:
       to: /home/sandbox/.cargo
     - from: /root/.rustup
       to: /home/sandbox/.rustup
+  cache:
+    - name: cargo
+      to: /home/sandbox/.cargo/registry

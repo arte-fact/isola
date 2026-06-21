@@ -32,6 +32,8 @@ pub struct SandboxExec {
     pub capture_output: bool,
     /// Device nodes to bind-mount from host (e.g., "/dev/kfd", "/dev/dri").
     pub devices: Vec<String>,
+    /// Shared package-manager caches to bind-mount, as (host_abs, sandbox_abs).
+    pub cache_mounts: Vec<(String, String)>,
 }
 
 /// Handle to a running sandbox process with optional captured output.
@@ -96,6 +98,7 @@ struct ChildArgs {
     share_display: bool,
     run_as_uid: Option<u32>,
     devices: Vec<String>,
+    cache_mounts: Vec<(String, String)>,
 }
 
 pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, IsolaError> {
@@ -124,6 +127,7 @@ pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, IsolaError> {
         share_display: exec.share_display,
         run_as_uid: exec.run_as_uid,
         devices: exec.devices.clone(),
+        cache_mounts: exec.cache_mounts.clone(),
     };
 
     // Create sync pipe
@@ -249,6 +253,7 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
         &args.host_mounts,
         args.share_display,
         &args.devices,
+        &args.cache_mounts,
     )?;
 
     // pivot_root
@@ -383,6 +388,7 @@ pub fn spawn_sandbox(exec: SandboxExec) -> Result<SandboxChild, IsolaError> {
         share_display: exec.share_display,
         run_as_uid: exec.run_as_uid,
         devices: exec.devices.clone(),
+        cache_mounts: exec.cache_mounts.clone(),
     };
 
     let (pipe_read, pipe_write) = nix::unistd::pipe()

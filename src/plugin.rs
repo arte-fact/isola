@@ -88,6 +88,11 @@ pub struct PluginPaths {
     /// Each entry is an absolute path (e.g., "/dev/kfd", "/dev/dri").
     #[serde(default)]
     pub device: Vec<DeviceEntry>,
+    /// Shared package-manager caches: a host-side cache pool bind-mounted into
+    /// the sandbox so downloads are reused across sandboxes and sessions. The
+    /// pool lives at `~/.isola/cache/pkg/<name>` and is mounted at `to`.
+    #[serde(default)]
+    pub cache: Vec<CacheEntry>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -109,6 +114,15 @@ pub struct MountEntry {
 pub struct DeviceEntry {
     /// Absolute host path (e.g., "/dev/kfd", "/dev/dri")
     pub path: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CacheEntry {
+    /// Shared cache pool name; the host directory is `~/.isola/cache/pkg/<name>`.
+    pub name: String,
+    /// Absolute path inside the sandbox to mount the cache at
+    /// (e.g., "/home/sandbox/.cargo/registry").
+    pub to: String,
 }
 
 /// A fully resolved plugin with manifest and optional install script.
@@ -598,6 +612,26 @@ mod tests {
         assert!(device_paths.contains(&"/dev/kfd"));
         assert!(device_paths.contains(&"/dev/nvidia0"));
         assert!(device_paths.contains(&"/dev/nvidiactl"));
+    }
+
+    #[test]
+    fn toolchain_plugins_declare_shared_caches() {
+        let registry = PluginRegistry::load().unwrap();
+        let has_cache = |plugin: &str, name: &str| {
+            registry
+                .get(plugin)
+                .unwrap()
+                .manifest
+                .paths
+                .cache
+                .iter()
+                .any(|c| c.name == name && c.to.starts_with('/'))
+        };
+        assert!(has_cache("rust", "cargo"));
+        assert!(has_cache("go", "go-mod"));
+        assert!(has_cache("go", "go-build"));
+        assert!(has_cache("nodejs", "npm"));
+        assert!(has_cache("python-uv", "uv"));
     }
 
     #[test]

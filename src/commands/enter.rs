@@ -44,6 +44,32 @@ pub fn collect_host_mounts(environments: &[String]) -> Vec<(String, String, bool
         .collect()
 }
 
+/// Shared package-manager caches to bind-mount for the given environments, as
+/// `(host_source_abs, sandbox_dest_abs)` pairs. Declared per plugin via the
+/// `cache:` field in plugin.yaml, so downloads are reused across sandboxes and
+/// sessions with no extra configuration inside the sandbox.
+#[cfg(target_os = "linux")]
+pub fn collect_cache_mounts(environments: &[String]) -> Vec<(String, String)> {
+    let Ok(registry) = crate::plugin::PluginRegistry::load() else {
+        return vec![];
+    };
+    let mut mounts = Vec::new();
+    for env in environments {
+        if let Some(plugin) = registry.get(env) {
+            for c in &plugin.manifest.paths.cache {
+                let host = crate::paths::pkg_cache_dir(&c.name)
+                    .to_string_lossy()
+                    .into_owned();
+                let pair = (host, c.to.clone());
+                if !mounts.contains(&pair) {
+                    mounts.push(pair);
+                }
+            }
+        }
+    }
+    mounts
+}
+
 /// Collect device entries from plugins and sandbox config.
 pub fn collect_devices(environments: &[String], config_devices: &[String]) -> Vec<String> {
     let mut devices: Vec<String> = config_devices.to_vec();
@@ -86,6 +112,7 @@ pub fn run_command_captured(
         multi_uid: true,
         capture_output: true,
         devices: vec![],
+        cache_mounts: vec![],
     };
 
     crate::sandbox::linux::namespace::spawn_sandbox(exec)
@@ -113,6 +140,7 @@ pub fn run_command(name: &str, command: &str) -> Result<i32, IsolaError> {
         multi_uid: true,
         capture_output: false,
         devices: vec![],
+        cache_mounts: vec![],
     };
 
     crate::sandbox::linux::namespace::enter_sandbox(exec)
@@ -191,5 +219,19 @@ mod tests {
             let vars = build_env_vars(as_sandbox);
             assert!(vars.iter().any(|v| v == "LANG=C.UTF-8"));
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cache_mounts_come_from_plugin_manifests() {
+        let m = collect_cache_mounts(&["rust".to_string(), "go".to_string()]);
+        let dests: Vec<&str> = m.iter().map(|(_, d)| d.as_str()).collect();
+        assert!(dests.contains(&"/home/sandbox/.cargo/registry"));
+        assert!(dests.contains(&"/home/sandbox/go/pkg/mod"));
+        assert!(dests.contains(&"/home/sandbox/.cache/go-build"));
+        // Host source lives under the shared pkg cache dir.
+        assert!(m.iter().any(|(h, _)| h.contains("cache/pkg/cargo")));
+        // A plugin that declares no cache contributes nothing.
+        assert!(collect_cache_mounts(&["git".to_string()]).is_empty());
     }
 }

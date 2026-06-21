@@ -15,6 +15,17 @@ use namespace::{SandboxExec, enter_sandbox};
 pub struct LinuxBackend;
 
 impl LinuxBackend {
+    /// Shared package caches (from plugin `cache:` declarations) for these
+    /// environments, creating the host-side directories so the in-child
+    /// bind-mount succeeds.
+    fn cache_mounts_for(environments: &[String]) -> Vec<(String, String)> {
+        let mounts = crate::commands::enter::collect_cache_mounts(environments);
+        for (host, _) in &mounts {
+            let _ = std::fs::create_dir_all(host);
+        }
+        mounts
+    }
+
     fn build_env_vars(as_sandbox_user: bool) -> Vec<String> {
         let mut env = if as_sandbox_user {
             vec![
@@ -142,6 +153,7 @@ impl SandboxBackend for LinuxBackend {
             multi_uid: true,
             capture_output: false,
             devices,
+            cache_mounts: Self::cache_mounts_for(&config.environments),
         };
 
         enter_sandbox(exec)
@@ -167,6 +179,7 @@ impl SandboxBackend for LinuxBackend {
             multi_uid: true,
             capture_output: false,
             devices: vec![],
+            cache_mounts: vec![],
         };
 
         enter_sandbox(exec)
@@ -214,6 +227,7 @@ impl SandboxBackend for LinuxBackend {
             multi_uid: true,
             capture_output: false,
             devices,
+            cache_mounts: Self::cache_mounts_for(&config.environments),
         };
 
         enter_sandbox(exec)
@@ -250,6 +264,7 @@ impl SandboxBackend for LinuxBackend {
                 multi_uid: true,
                 capture_output: false,
                 devices: vec![],
+                cache_mounts: vec![],
             };
             if let Err(e) = enter_sandbox(exec) {
                 eprintln!("warning: in-sandbox cleanup failed: {e}");

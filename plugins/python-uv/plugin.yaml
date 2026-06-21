@@ -11,3 +11,6 @@ paths:
   copy:
     - from: /root/.local
       to: /home/sandbox/.local
+  cache:
+    - name: uv
+      to: /home/sandbox/.cache/uv

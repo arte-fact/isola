@@ -46,6 +46,13 @@ pub fn layers_cache_dir() -> PathBuf {
     cache_dir().join("layers")
 }
 
+/// Shared per-package-manager download cache, mounted into every sandbox so
+/// builds reuse downloads across sandboxes and sessions: `~/.isola/cache/pkg/<tool>`.
+#[cfg(target_os = "linux")]
+pub fn pkg_cache_dir(tool: &str) -> PathBuf {
+    cache_dir().join("pkg").join(tool)
+}
+
 /// Path for a single layer cache file.
 /// - Base layer: `layers/base-{hash}-{shell}.tar.gz`
 /// - Env layer: `layers/env-{name}-{hash}.tar.gz`
