@@ -287,7 +287,7 @@ fn run_linux(
 
     // Configure rootfs (sandbox-specific: hostname, git config, shell config, etc.)
     progress.start_step("Configuring rootfs...");
-    rootfs::post_setup_rootfs(&rootfs_path, name, environments, registry)?;
+    rootfs::post_setup_rootfs(&rootfs_path, name, environments, registry, true)?;
     progress.finish_step("Configured rootfs");
 
     // Save config (may already exist from partial layer build, save again to ensure latest)

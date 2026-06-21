@@ -58,7 +58,7 @@ fn run_linux(
     let progress = CreationProgress::new(&format!("Re-provisioning '{name}'"));
 
     progress.start_step("Configuring rootfs...");
-    rootfs::post_setup_rootfs(&rootfs_path, name, environments, &registry)?;
+    rootfs::post_setup_rootfs(&rootfs_path, name, environments, &registry, false)?;
     progress.finish_step("Configured rootfs");
 
     // Check which layers need rebuilding

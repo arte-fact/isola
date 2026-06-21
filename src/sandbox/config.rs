@@ -65,7 +65,7 @@ impl SandboxShell {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SandboxConfig {
     pub name: String,
     pub created_at: DateTime<Utc>,
@@ -89,7 +89,10 @@ pub struct SandboxConfig {
 impl SandboxConfig {
     pub fn load(name: &str) -> Result<Self, IsolaError> {
         let path = paths::config_path(name);
-        let data = std::fs::read_to_string(&path)?;
+        // A missing config means the sandbox doesn't exist — report that clearly
+        // rather than leaking a raw "No such file or directory" IO error.
+        let data = std::fs::read_to_string(&path)
+            .map_err(|_| IsolaError::SandboxNotFound(name.to_string()))?;
         serde_json::from_str(&data).map_err(|e| IsolaError::ConfigError(e.to_string()))
     }
 
@@ -167,6 +170,17 @@ impl LocalConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn load_missing_sandbox_reports_not_found() {
+        // A name that cannot exist on disk must surface SandboxNotFound, not a
+        // raw "No such file or directory" IO error.
+        let err = SandboxConfig::load("isola-nonexistent-sandbox-9d3f1a-test").unwrap_err();
+        assert!(
+            matches!(err, IsolaError::SandboxNotFound(_)),
+            "expected SandboxNotFound, got: {err:?}"
+        );
+    }
 
     #[test]
     fn config_round_trip_serialization() {

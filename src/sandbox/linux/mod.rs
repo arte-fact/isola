@@ -99,7 +99,7 @@ impl SandboxBackend for LinuxBackend {
     fn write_sandbox_files(&self, name: &str, environments: &[String]) -> Result<(), IsolaError> {
         let rootfs_path = paths::rootfs_dir(name);
         let registry = crate::plugin::PluginRegistry::load()?;
-        rootfs::post_setup_rootfs(&rootfs_path, name, environments, &registry)
+        rootfs::post_setup_rootfs(&rootfs_path, name, environments, &registry, true)
     }
 
     fn enter_interactive(

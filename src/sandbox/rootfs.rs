@@ -643,7 +643,22 @@ pub fn post_setup_rootfs(
     name: &str,
     environments: &[String],
     registry: &PluginRegistry,
+    fresh: bool,
 ) -> Result<(), IsolaError> {
+    // Write a rootfs config file. On reprovision (`fresh == false`) the rootfs
+    // already exists and provisioning has left many files owned by mapped
+    // subordinate UIDs, so a host-side rewrite of e.g. /etc/* hits EACCES. Those
+    // files persist correctly from the original create (and resolv.conf/hostname
+    // are handled at runtime via bind-mount and sethostname), so a permission
+    // error on reprovision is tolerated rather than fatal.
+    let write_cfg = |path: &Path, contents: &str| -> Result<(), IsolaError> {
+        let r = std::fs::write(path, contents);
+        if !fresh && matches!(&r, Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied) {
+            return Ok(());
+        }
+        r.io_ctx("write", path)
+    };
+
     // Inherit DNS from host. `/etc/resolv.conf` is often a symlink into
     // `/run/systemd/resolve/` — if the target is gone (e.g. resolved is
     // disabled) read_to_string returns ENOENT. Fall back to a sane default
@@ -665,28 +680,27 @@ pub fn post_setup_rootfs(
         }
     };
     let resolv_dst = rootfs.join("etc/resolv.conf");
-    std::fs::write(&resolv_dst, &host_resolv).io_ctx("write", &resolv_dst)?;
+    write_cfg(&resolv_dst, &host_resolv)?;
 
     let hostname_dst = rootfs.join("etc/hostname");
-    std::fs::write(&hostname_dst, format!("{name}\n")).io_ctx("write", &hostname_dst)?;
+    write_cfg(&hostname_dst, &format!("{name}\n"))?;
 
     let hosts_dst = rootfs.join("etc/hosts");
-    std::fs::write(
+    write_cfg(
         &hosts_dst,
-        format!("127.0.0.1 localhost {name}\n::1 localhost {name}\n"),
-    )
-    .io_ctx("write", &hosts_dst)?;
+        &format!("127.0.0.1 localhost {name}\n::1 localhost {name}\n"),
+    )?;
 
     let apt_dir = rootfs.join("etc/apt/apt.conf.d");
-    std::fs::create_dir_all(&apt_dir).io_ctx("create dir", &apt_dir)?;
+    let _ = std::fs::create_dir_all(&apt_dir);
     let apt_cfg = apt_dir.join("99sandbox");
-    std::fs::write(&apt_cfg, "APT::Sandbox::User \"root\";\n").io_ctx("write", &apt_cfg)?;
+    write_cfg(&apt_cfg, "APT::Sandbox::User \"root\";\n")?;
 
     // Configure dpkg for user namespace environment
     let dpkg_dir = rootfs.join("etc/dpkg/dpkg.cfg.d");
-    std::fs::create_dir_all(&dpkg_dir).io_ctx("create dir", &dpkg_dir)?;
+    let _ = std::fs::create_dir_all(&dpkg_dir);
     let dpkg_cfg = dpkg_dir.join("01sandbox");
-    std::fs::write(&dpkg_cfg, "force-unsafe-io\n").io_ctx("write", &dpkg_cfg)?;
+    write_cfg(&dpkg_cfg, "force-unsafe-io\n")?;
 
     for dir in &[
         "workspace",
@@ -701,7 +715,10 @@ pub fn post_setup_rootfs(
         std::fs::create_dir_all(&d).io_ctx("create dir", &d)?;
     }
 
-    // Copy host files specified by plugins (host_copy)
+    // Copy host files specified by plugins (host_copy). On reprovision the
+    // destinations may already exist owned by mapped subordinate UIDs (files a
+    // provision script created under /home/sandbox), so a re-copy can hit
+    // EACCES — the existing copy persists, so this is tolerated when !fresh.
     let home = std::env::var("HOME").ok().map(PathBuf::from);
     if let Some(ref h) = home {
         for env in environments {
@@ -709,15 +726,21 @@ pub fn post_setup_rootfs(
                 for entry in &plugin.manifest.paths.host_copy {
                     let src = h.join(&entry.from);
                     let dst = rootfs.join("home/sandbox").join(&entry.to);
-                    if src.exists() {
-                        if src.is_dir() {
-                            copy_dir_recursive(&src, &dst)?;
-                        } else {
-                            if let Some(parent) = dst.parent() {
-                                std::fs::create_dir_all(parent).io_ctx("create dir", parent)?;
-                            }
-                            std::fs::copy(&src, &dst).io_ctx("copy", &src)?;
+                    if !src.exists() {
+                        continue;
+                    }
+                    let res = if src.is_dir() {
+                        copy_dir_recursive(&src, &dst)
+                    } else {
+                        if let Some(parent) = dst.parent() {
+                            std::fs::create_dir_all(parent).io_ctx("create dir", parent)?;
                         }
+                        std::fs::copy(&src, &dst).io_ctx("copy", &src).map(|_| ())
+                    };
+                    match res {
+                        Ok(()) => {}
+                        Err(_) if !fresh => { /* keep existing copy on reprovision */ }
+                        Err(e) => return Err(e),
                     }
                 }
             }
@@ -726,10 +749,8 @@ pub fn post_setup_rootfs(
 
     // Inherit host git identity (best-effort)
     if let Some(gitconfig) = build_host_gitconfig() {
-        let sandbox_gc = rootfs.join("home/sandbox/.gitconfig");
-        std::fs::write(&sandbox_gc, &gitconfig).io_ctx("write", &sandbox_gc)?;
-        let root_gc = rootfs.join("root/.gitconfig");
-        std::fs::write(&root_gc, &gitconfig).io_ctx("write", &root_gc)?;
+        write_cfg(&rootfs.join("home/sandbox/.gitconfig"), &gitconfig)?;
+        write_cfg(&rootfs.join("root/.gitconfig"), &gitconfig)?;
     }
 
     Ok(())
