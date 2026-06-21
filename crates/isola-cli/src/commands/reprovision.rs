@@ -49,7 +49,7 @@ fn run_linux(
     config: &SandboxConfig,
     environments: &[String],
 ) -> Result<(), IsolaError> {
-    use crate::progress::{self, CreationProgress};
+    use crate::progress::CreationProgress;
     use isola_core::plugin::PluginRegistry;
     use isola_core::sandbox::rootfs;
 
@@ -89,7 +89,8 @@ fn run_linux(
 
         progress.start_step(&format!("Provisioning {layer_name}..."));
         let child = isola_core::sandbox::exec::run_command_captured(name, &script)?;
-        let (exit_code, last_lines) = progress::monitor_provisioning(child, &progress, &script)?;
+        let (exit_code, last_lines) =
+            isola_core::create::monitor_provisioning(child, &progress, &script)?;
         if exit_code != 0 {
             progress.finish_error(exit_code, &last_lines);
             return Err(IsolaError::ProvisionFailed(exit_code));
@@ -103,7 +104,7 @@ fn run_linux(
                 let cache_script = rootfs::build_base_cache_script();
                 let child = isola_core::sandbox::exec::run_command_captured(name, &cache_script)?;
                 let (exit_code, _) =
-                    progress::monitor_provisioning(child, &progress, &cache_script)?;
+                    isola_core::create::monitor_provisioning(child, &progress, &cache_script)?;
                 if exit_code != 0 {
                     return Err(IsolaError::ProvisionFailed(exit_code));
                 }

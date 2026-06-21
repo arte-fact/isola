@@ -1,13 +1,9 @@
-use std::io::BufRead;
 use std::io::Write;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use console::style;
-
-use isola_core::error::IsolaError;
-use isola_core::sandbox::linux::namespace::SandboxChild;
 
 const TICK_STRINGS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
@@ -231,56 +227,6 @@ impl CreationProgress {
         }
     }
 }
-/// Count expected provisioning phases by counting `>>> ` markers in the script.
-pub fn count_provision_phases(script: &str) -> usize {
-    script
-        .lines()
-        .filter(|l| {
-            let t = l.trim_start();
-            t.starts_with("echo \">>> ") || t.starts_with("echo '>>> ")
-        })
-        .count()
-}
-
-/// Read piped provisioning output, update progress, return exit code.
-pub fn monitor_provisioning(
-    child: SandboxChild,
-    progress: &CreationProgress,
-    script: &str,
-) -> Result<(i32, Vec<String>), IsolaError> {
-    let total = count_provision_phases(script);
-    let mut current_phase = 0;
-    let mut last_lines: Vec<String> = Vec::new();
-
-    if let Some(output) = &child.output {
-        let reader = std::io::BufReader::new(output);
-        for line in reader.lines() {
-            let line = match line {
-                Ok(l) => l,
-                Err(_) => break,
-            };
-
-            if let Some(phase_name) = line.strip_prefix(">>> ") {
-                current_phase += 1;
-                let name = phase_name.trim_end_matches("...");
-                progress.set_provision_phase(current_phase, total, name);
-            } else if !line.is_empty() {
-                progress.set_provision_detail(&line);
-            }
-
-            if !line.is_empty() {
-                last_lines.push(line);
-                if last_lines.len() > 10 {
-                    last_lines.remove(0);
-                }
-            }
-        }
-    }
-
-    let exit_code = child.wait()?;
-    Ok((exit_code, last_lines))
-}
-
 pub(crate) fn truncate_to_width(line: &str, indent: usize) -> String {
     let width = console::Term::stderr().size().1.max(40) as usize;
     let available = width.saturating_sub(indent);
@@ -324,37 +270,32 @@ impl isola_core::ProgressReporter for CreationProgress {
         };
         CreationProgress::start_step(self, &msg);
     }
+    fn start_provision(&self) {
+        CreationProgress::start_provision(self);
+    }
+    fn provision_phase(&self, phase: usize, total: usize, name: &str) {
+        CreationProgress::set_provision_phase(self, phase, total, name);
+    }
+    fn provision_detail(&self, line: &str) {
+        CreationProgress::set_provision_detail(self, line);
+    }
+    fn finish_success(&self, environments: &[String]) {
+        CreationProgress::finish_success(self, environments);
+    }
+    fn finish_cached(&self, environments: &[String]) {
+        CreationProgress::finish_cached(self, environments);
+    }
+    fn finish_layered(&self, environments: &[String], cached: &[String], built: &[String]) {
+        CreationProgress::finish_layered(self, environments, cached, built);
+    }
+    fn finish_error(&self, exit_code: i32, last_lines: &[String]) {
+        CreationProgress::finish_error(self, exit_code, last_lines);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn count_phases_from_script() {
-        let script = r#"
-echo ">>> Step one..."
-echo ">>> Step two..."
-echo ">>> Step three..."
-"#;
-        assert_eq!(count_provision_phases(script), 3);
-    }
-
-    #[test]
-    fn count_phases_ignores_non_markers() {
-        let script = r#"
-echo ">>> Step one..."
-echo "not a marker"
-# echo ">>> commented out"
-echo ">>> Step two..."
-"#;
-        assert_eq!(count_provision_phases(script), 2);
-    }
-
-    #[test]
-    fn count_phases_empty_script() {
-        assert_eq!(count_provision_phases(""), 0);
-    }
 
     #[test]
     fn format_duration_seconds() {
