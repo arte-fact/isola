@@ -29,9 +29,7 @@ pub struct PluginAutoDetect {
 /// Interactive prompt shown by the setup wizard when the plugin is selected.
 /// The answer is exported as an environment variable before the install script runs.
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct PluginPrompt {
-    pub name: String,
     pub message: String,
     /// Environment variable to export with the chosen value.
     pub env_var: String,
@@ -43,7 +41,6 @@ pub struct PluginPrompt {
 
 /// Deserialized from plugin.yaml
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct PluginManifest {
     pub name: String,
     pub description: String,
@@ -139,7 +136,6 @@ pub struct CacheEntry {
 
 /// A fully resolved plugin with manifest and optional install script.
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct Plugin {
     pub manifest: PluginManifest,
     /// Install script content. None for config-only plugins (layer: user with no software to install).
@@ -339,7 +335,6 @@ impl PluginRegistry {
     }
 
     /// Validate that all requested environment names have plugins.
-    #[allow(dead_code)]
     pub fn validate_environments(&self, envs: &[String]) -> Result<(), IsolaError> {
         for env in envs {
             if self.get(env).is_none() {

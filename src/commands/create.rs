@@ -57,8 +57,6 @@ pub fn run(
     })
 }
 
-/// Create a sandbox with selected environments
-#[allow(clippy::too_many_arguments)]
 /// Everything needed to create a sandbox, bundled so the platform-specific
 /// create functions take a single argument instead of a long parameter list.
 pub struct CreateRequest<'a> {

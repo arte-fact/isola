@@ -28,8 +28,8 @@ pub fn list() -> Result<(), IsolaError> {
                 PluginSource::Project => "project",
             };
             println!(
-                "  {:<14} [{:<7}] {}",
-                p.manifest.name, src, p.manifest.description
+                "  {:<14} v{:<7} [{:<7}] {}",
+                p.manifest.name, p.manifest.version, src, p.manifest.description
             );
         }
         println!();

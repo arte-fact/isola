@@ -9,8 +9,7 @@ paths:
   bin: []
   copy: []
 prompts:
-  - name: version
-    message: "PHP version:"
+  - message: "PHP version:"
     env_var: PHP_VERSION
     choices: ["8.4", "8.3", "8.2", "8.1"]
     default: "8.4"
