@@ -98,18 +98,10 @@ impl SandboxBackend for LinuxBackend {
             );
         }
 
+        // If AppArmor blocks unprivileged user namespaces and there's no profile
+        // yet, offer to run the one-time host setup now instead of erroring out.
         #[cfg(target_os = "linux")]
-        {
-            if crate::commands::setup_host::apparmor_userns_restricted()
-                && !crate::commands::setup_host::has_apparmor_profile()
-            {
-                return Err(IsolaError::NamespaceError(
-                    "AppArmor restricts unprivileged user namespaces on this system.\n\
-                     Run `isola setup-host` to install the required AppArmor profile."
-                        .to_string(),
-                ));
-            }
-        }
+        crate::commands::setup_host::ensure_userns_allowed()?;
 
         Ok(())
     }

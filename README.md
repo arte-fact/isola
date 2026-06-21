@@ -40,15 +40,22 @@ isola                 # wizard → pick tools → drops you in a sandbox shell
 cargo install --path .          # builds and installs the `isola` binary
 ```
 
-**Linux (x86_64)** — uses user namespaces, no privileges needed at runtime. One-time host setup on Ubuntu:
+**Linux (x86_64)** — uses user namespaces, no privileges needed at runtime.
+
+On Ubuntu 24.04+, AppArmor blocks unprivileged user namespaces by default. The
+**first time** you create a sandbox, isola detects this and offers to run a
+one-time host setup for you (installing an AppArmor profile and subordinate UID
+ranges) — it uses `sudo`, so you just confirm once. You can also run it
+explicitly at any time:
 
 ```bash
 isola setup-host                # installs an AppArmor profile + subordinate UID range
 ```
 
-For best isolation, install `uidmap` so the sandbox can map a full range of UIDs
-(`sudo apt install uidmap`). Without it, isola falls back to a single-UID mapping
-that still works but is coarser. `setup-host` sets this up for you.
+This isn't done fully silently because it modifies system files (`/etc/apparmor.d`,
+`/etc/subuid`) via `sudo` — isola asks before touching your host. For best
+isolation it also sets up `uidmap`-style multi-UID mapping; without it, isola
+falls back to a coarser single-UID mapping that still works.
 
 **macOS (Apple Silicon / Intel)** — uses a [Lima](https://lima-vm.io/) VM:
 
@@ -208,7 +215,7 @@ compatible GPU is detected on the host. Details in
 ## Troubleshooting
 
 - **`isola: command not found`** — `~/.cargo/bin` isn't on your `PATH`. Add it, or run the binary by full path.
-- **Creation fails on Ubuntu with a namespace/clone error** — run `isola setup-host` (AppArmor restricts unprivileged user namespaces on recent Ubuntu).
+- **Creation fails on Ubuntu with a namespace/clone error** — AppArmor restricts unprivileged user namespaces on recent Ubuntu. isola offers to fix this on first run; if you declined or ran non-interactively, run `isola setup-host`.
 - **A tool isn't found inside the sandbox** — make sure its plugin was installed (`isola status <name>`); re-add it and `isola reprovision <name>`.
 - **The shared package cache filled up** — `isola cache clean` (add `--all` to also drop the rootfs caches).
 - **`Sandbox '<name>' not found`** — list what exists with `isola list`; names come from the project directory.

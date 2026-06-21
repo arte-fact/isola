@@ -20,6 +20,67 @@ pub fn has_apparmor_profile() -> bool {
     Path::new(APPARMOR_PROFILE_DIR).join("isola").exists()
 }
 
+/// Ensure unprivileged user namespaces are usable before creating a sandbox.
+///
+/// On systems where AppArmor blocks them (Ubuntu 24.04+) and no isola profile
+/// is installed yet, offer — interactively — to run host setup now, then re-exec
+/// to pick up the freshly installed profile (it only attaches at the next exec).
+/// `setup-host` needs `sudo`, so this is offered rather than done silently.
+/// Returns `Err` if the blocker remains: setup was declined, we're not on a
+/// terminal, or it failed.
+#[cfg(target_os = "linux")]
+pub fn ensure_userns_allowed() -> Result<(), IsolaError> {
+    use std::io::IsTerminal;
+
+    // Not blocked (or already fixed) → nothing to do.
+    if !apparmor_userns_restricted() || has_apparmor_profile() {
+        return Ok(());
+    }
+
+    let blocked = || {
+        IsolaError::NamespaceError(
+            "AppArmor restricts unprivileged user namespaces on this system.\n\
+             Run `isola setup-host` to install the required AppArmor profile."
+                .to_string(),
+        )
+    };
+
+    // Can only offer if we can actually prompt (and read sudo's password prompt).
+    if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+        return Err(blocked());
+    }
+
+    eprintln!(
+        "AppArmor on this system blocks the unprivileged user namespaces isola needs.\n\
+         isola can install a one-time AppArmor profile (and set up subordinate UID\n\
+         ranges) now — this uses `sudo`."
+    );
+    let proceed = inquire::Confirm::new("Run host setup now?")
+        .with_default(true)
+        .prompt()
+        .unwrap_or(false);
+    if !proceed {
+        return Err(blocked());
+    }
+
+    run()?;
+    if !has_apparmor_profile() {
+        return Err(blocked());
+    }
+
+    // The new profile only attaches at exec time, so re-exec isola with the same
+    // arguments to pick it up and continue without the user re-running anything.
+    use std::os::unix::process::CommandExt;
+    let exec_err = std::process::Command::new("/proc/self/exe")
+        .args(std::env::args_os().skip(1))
+        .exec();
+    eprintln!(
+        "Host setup complete, but isola couldn't restart itself ({exec_err}).\n\
+         Please re-run your command."
+    );
+    std::process::exit(0);
+}
+
 /// Generate AppArmor profile content for the isola binary at the given path
 #[cfg(target_os = "linux")]
 pub(crate) fn generate_profile(binary_path: &str) -> String {
