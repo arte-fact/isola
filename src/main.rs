@@ -49,24 +49,6 @@ fn main() {
             }
             Err(e) => Err(e),
         },
-        Some(Commands::Shell { name }) => {
-            let name = match name.or_else(|| commands::default::detect_sandbox().ok().flatten()) {
-                Some(n) => n,
-                None => {
-                    eprintln!(
-                        "error: no sandbox found for current directory. Create one first with: isola"
-                    );
-                    std::process::exit(1);
-                }
-            };
-            match commands::enter::run(&name, None, vec![]) {
-                Ok(code) => {
-                    reset_terminal();
-                    std::process::exit(code);
-                }
-                Err(e) => Err(e),
-            }
-        }
         Some(Commands::Exec {
             name,
             workspace,

@@ -28,7 +28,10 @@ pub enum Commands {
         #[arg(long, value_delimiter = ',')]
         plugins: Vec<String>,
     },
-    /// Enter an existing sandbox
+    /// Enter a sandbox shell by name (from anywhere).
+    ///
+    /// In a project directory, just run `isola` with no arguments to enter the
+    /// sandbox for the current directory.
     Enter {
         /// Name of the sandbox to enter
         name: String,
@@ -38,11 +41,6 @@ pub enum Commands {
         /// Device nodes to bind-mount from host (e.g., /dev/kfd, /dev/dri)
         #[arg(long)]
         device: Vec<String>,
-    },
-    /// Open a root shell in a sandbox (auto-detects if name omitted)
-    Shell {
-        /// Name of the sandbox (auto-detected from cwd if omitted)
-        name: Option<String>,
     },
     /// Run a command inside a sandbox
     Exec {

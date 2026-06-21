@@ -80,10 +80,9 @@ Once created, the sandbox launches your shell automatically. On subsequent runs,
 ## Usage
 
 ```
-isola                              # Auto-detect sandbox or run setup wizard
+isola                              # Enter the sandbox for the current directory (or run the setup wizard)
 isola create <name> [-w <path>]    # Create a new sandbox
-isola enter <name>                 # Enter sandbox
-isola shell [<name>]               # Open a shell (auto-detects sandbox from cwd)
+isola enter <name>                 # Enter a sandbox shell by name, from anywhere
 isola exec <name> -- <cmd...>      # Run a command inside a sandbox
 isola status <name>                # Show sandbox status
 isola reprovision <name>           # Re-run provisioning scripts
