@@ -1,6 +1,7 @@
 use crate::commands::status::{dir_size, format_size};
 use crate::error::IsolaError;
 use crate::paths;
+use crate::sandbox::backend;
 use crate::sandbox::config::SandboxConfig;
 
 pub fn run() -> Result<(), IsolaError> {
@@ -22,11 +23,14 @@ pub fn run() -> Result<(), IsolaError> {
 
     entries.sort_by_key(|e| e.file_name());
 
+    let b = backend::create_backend();
+    let backend_name = b.backend_name();
+
     println!(
-        "{:<20} {:<24} {:<20} {:<10} WORKSPACE",
-        "NAME", "CREATED", "ENVIRONMENTS", "SIZE"
+        "{:<20} {:<16} {:<24} {:<20} {:<10} WORKSPACE",
+        "NAME", "BACKEND", "CREATED", "ENVIRONMENTS", "SIZE"
     );
-    println!("{}", "-".repeat(100));
+    println!("{}", "-".repeat(116));
 
     for entry in entries {
         let name = entry.file_name().to_string_lossy().to_string();
@@ -43,8 +47,9 @@ pub fn run() -> Result<(), IsolaError> {
                     config.environments.join(",")
                 };
                 println!(
-                    "{:<20} {:<24} {:<20} {:<10} {}",
+                    "{:<20} {:<16} {:<24} {:<20} {:<10} {}",
                     config.name,
+                    backend_name,
                     config.created_at.format("%Y-%m-%d %H:%M:%S UTC"),
                     envs,
                     size,
@@ -52,7 +57,10 @@ pub fn run() -> Result<(), IsolaError> {
                 );
             }
             Err(_) => {
-                println!("{:<20} {:<24} {:<20} {:<10} ?", name, "?", "?", size);
+                println!(
+                    "{:<20} {:<16} {:<24} {:<20} {:<10} ?",
+                    name, "?", "?", "?", size
+                );
             }
         }
     }

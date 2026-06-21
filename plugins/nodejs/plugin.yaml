@@ -1,0 +1,10 @@
+name: nodejs
+description: "Node.js 22 LTS (node + npm)"
+version: "1.0.0"
+layer: project
+provision:
+  script: install.sh
+  verify: "node --version && npm --version"
+paths:
+  bin: []
+  copy: []

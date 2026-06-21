@@ -1,0 +1,19 @@
+name: cuda
+description: "NVIDIA CUDA toolkit (nvcc). Requires an NVIDIA GPU on the host."
+version: "1.0.0"
+layer: project
+provision:
+  script: install.sh
+  verify: "nvcc --version | tail -1"
+paths:
+  # NVIDIA compute device nodes (passed through from the host). The matching
+  # userspace driver libraries are bind-mounted automatically at entry.
+  device:
+    - path: /dev/nvidia0
+    - path: /dev/nvidia1
+    - path: /dev/nvidia2
+    - path: /dev/nvidia3
+    - path: /dev/nvidiactl
+    - path: /dev/nvidia-uvm
+    - path: /dev/nvidia-uvm-tools
+    - path: /dev/nvidia-modeset

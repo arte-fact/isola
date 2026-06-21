@@ -1,0 +1,19 @@
+name: git-config
+description: "Share host git configuration (read-only)"
+version: "1.0.0"
+layer: user
+auto_detect:
+  host_path: .gitconfig
+provision:
+  script: ~
+paths:
+  host_mount:
+    - from: .gitconfig
+      to: .gitconfig
+      readonly: true
+    - from: .gitignore_global
+      to: .gitignore_global
+      readonly: true
+    - from: .config/git
+      to: .config/git
+      readonly: true

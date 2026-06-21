@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[derive(Parser)]
 #[command(
     name = "isola",
-    about = "Persistent isolated sandboxes running Claude Code"
+    about = "Persistent isolated Linux sandboxes for developers"
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -21,17 +21,23 @@ pub enum Commands {
         /// Workspace directory to bind-mount into the sandbox
         #[arg(short, long)]
         workspace: Option<PathBuf>,
+        /// Skip provisioning cache (force fresh provisioning)
+        #[arg(long)]
+        no_cache: bool,
+        /// Comma-separated plugins to install (default: all project plugins)
+        #[arg(long, value_delimiter = ',')]
+        plugins: Vec<String>,
     },
-    /// Enter an existing sandbox (launches Claude Code or a shell)
+    /// Enter an existing sandbox
     Enter {
         /// Name of the sandbox to enter
         name: String,
-        /// Run a shell instead of Claude Code
-        #[arg(long)]
-        shell: bool,
         /// Workspace directory to bind-mount (overrides config)
         #[arg(short, long)]
         workspace: Option<PathBuf>,
+        /// Device nodes to bind-mount from host (e.g., /dev/kfd, /dev/dri)
+        #[arg(long)]
+        device: Vec<String>,
     },
     /// Open a root shell in a sandbox (auto-detects if name omitted)
     Shell {
@@ -45,6 +51,9 @@ pub enum Commands {
         /// Workspace directory to bind-mount (overrides config)
         #[arg(short, long)]
         workspace: Option<PathBuf>,
+        /// Device nodes to bind-mount from host (e.g., /dev/kfd, /dev/dri)
+        #[arg(long)]
+        device: Vec<String>,
         /// Command and arguments to run
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,

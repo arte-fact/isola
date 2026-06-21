@@ -1,5 +1,6 @@
 use crate::error::IsolaError;
 use crate::paths;
+use crate::sandbox::backend;
 use crate::sandbox::config::SandboxConfig;
 
 pub fn run(name: &str) -> Result<(), IsolaError> {
@@ -9,12 +10,12 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
     }
 
     let config = SandboxConfig::load(name)?;
-    let rootfs = paths::rootfs_dir(name);
-
-    let rootfs_healthy = rootfs.join("bin").is_dir() && rootfs.join("etc").is_dir();
+    let b = backend::create_backend();
+    let healthy = b.is_healthy(name);
     let disk_usage = dir_size(&sandbox_dir);
 
     println!("Sandbox: {}", config.name);
+    println!("Backend: {}", b.backend_name());
     println!(
         "Created: {}",
         config.created_at.format("%Y-%m-%d %H:%M:%S UTC")
@@ -43,9 +44,10 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
             .map(|p| p.exists())
             .unwrap_or(false)
     );
-    println!("Rootfs: {}", if rootfs_healthy { "ok" } else { "damaged" });
+    println!("Shell: {}", config.shell.name());
+    println!("Health: {}", if healthy { "ok" } else { "damaged" });
     println!("Disk usage: {}", format_size(disk_usage));
-    println!("Rootfs URL: {}", config.rootfs_url);
+    println!("Image URL: {}", config.rootfs_url);
 
     Ok(())
 }
@@ -54,8 +56,6 @@ pub fn dir_size(path: &std::path::Path) -> u64 {
     let mut total = 0u64;
     if let Ok(entries) = std::fs::read_dir(path) {
         for entry in entries.flatten() {
-            // Use symlink_metadata to avoid following symlinks (prevents
-            // double-counting and reading outside the sandbox directory).
             let meta = match entry.path().symlink_metadata() {
                 Ok(m) => m,
                 Err(_) => continue,
