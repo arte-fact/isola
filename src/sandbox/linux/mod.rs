@@ -1,5 +1,6 @@
 pub mod mounts;
 pub mod namespace;
+pub mod seccomp;
 pub mod userns;
 
 use std::path::Path;

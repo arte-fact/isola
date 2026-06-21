@@ -6,6 +6,7 @@ use std::path::Path;
 use nix::libc;
 
 use super::mounts;
+use super::seccomp;
 use super::userns;
 use crate::error::IsolaError;
 
@@ -144,7 +145,12 @@ pub fn enter_sandbox(exec: SandboxExec) -> Result<i32, IsolaError> {
         ..child_args
     };
 
-    let flags = libc::CLONE_NEWUSER | libc::CLONE_NEWPID | libc::CLONE_NEWNS | libc::SIGCHLD;
+    let flags = libc::CLONE_NEWUSER
+        | libc::CLONE_NEWPID
+        | libc::CLONE_NEWNS
+        | libc::CLONE_NEWUTS
+        | libc::CLONE_NEWIPC
+        | libc::SIGCHLD;
 
     // Safety: clone() creates a new process that uses `stack` and reads `packed_args`.
     // Both outlive the child: we block on waitpid() before this function returns,
@@ -220,6 +226,19 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
         .map_err(|_| IsolaError::NamespaceError("rootfs path is not valid UTF-8".into()))?;
     let rootfs = Path::new(rootfs_str);
 
+    // New UTS namespace: name the sandbox after its directory
+    // (.../sandboxes/<name>/rootfs). Best-effort; we still hold CAP_SYS_ADMIN
+    // here (no setuid yet) so this succeeds.
+    if let Some(name) = rootfs
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+    {
+        unsafe {
+            libc::sethostname(name.as_ptr() as *const libc::c_char, name.len());
+        }
+    }
+
     // Set up mounts
     mounts::setup_mounts(
         rootfs,
@@ -251,6 +270,14 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
     // their soname symlinks (e.g. libcuda.so.1) are created. Cheap and silent.
     if args.devices.iter().any(|d| d.contains("nvidia")) {
         let _ = std::process::Command::new("/sbin/ldconfig").status();
+    }
+
+    // Install the seccomp denylist for workload sessions (enter/exec, which run
+    // as the sandbox user). Done here, while we still hold CAP_SYS_ADMIN, so
+    // no_new_privs is not required and in-sandbox `sudo` keeps working. The
+    // root admin shell and provisioning (run_as_uid = None) are exempt.
+    if args.run_as_uid.is_some() {
+        seccomp::apply_denylist()?;
     }
 
     // Drop to non-root user if requested (only possible with multi-UID mapping)
@@ -372,7 +399,12 @@ pub fn spawn_sandbox(exec: SandboxExec) -> Result<SandboxChild, IsolaError> {
         ..child_args
     };
 
-    let flags = libc::CLONE_NEWUSER | libc::CLONE_NEWPID | libc::CLONE_NEWNS | libc::SIGCHLD;
+    let flags = libc::CLONE_NEWUSER
+        | libc::CLONE_NEWPID
+        | libc::CLONE_NEWNS
+        | libc::CLONE_NEWUTS
+        | libc::CLONE_NEWIPC
+        | libc::SIGCHLD;
 
     let child_pid = unsafe {
         libc::clone(
