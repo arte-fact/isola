@@ -738,37 +738,7 @@ pub fn post_setup_rootfs(
         std::fs::create_dir_all(&d).io_ctx("create dir", &d)?;
     }
 
-    // Copy host files specified by plugins (host_copy). On reprovision the
-    // destinations may already exist owned by mapped subordinate UIDs (files a
-    // provision script created under /home/sandbox), so a re-copy can hit
-    // EACCES — the existing copy persists, so this is tolerated when !fresh.
-    let home = std::env::var("HOME").ok().map(PathBuf::from);
-    if let Some(ref h) = home {
-        for env in environments {
-            if let Some(plugin) = registry.get(env) {
-                for entry in &plugin.manifest.paths.host_copy {
-                    let src = h.join(&entry.from);
-                    let dst = rootfs.join("home/sandbox").join(&entry.to);
-                    if !src.exists() {
-                        continue;
-                    }
-                    let res = if src.is_dir() {
-                        copy_dir_recursive(&src, &dst)
-                    } else {
-                        if let Some(parent) = dst.parent() {
-                            std::fs::create_dir_all(parent).io_ctx("create dir", parent)?;
-                        }
-                        std::fs::copy(&src, &dst).io_ctx("copy", &src).map(|_| ())
-                    };
-                    match res {
-                        Ok(()) => {}
-                        Err(_) if !fresh => { /* keep existing copy on reprovision */ }
-                        Err(e) => return Err(e),
-                    }
-                }
-            }
-        }
-    }
+    copy_host_files(rootfs, environments, registry, fresh)?;
 
     // Inherit host git identity (best-effort)
     if let Some(gitconfig) = build_host_gitconfig() {
@@ -776,6 +746,48 @@ pub fn post_setup_rootfs(
         write_cfg(&rootfs.join("root/.gitconfig"), &gitconfig)?;
     }
 
+    Ok(())
+}
+
+/// Copy host files declared by plugins (`paths.host_copy`) into the sandbox home.
+///
+/// On reprovision (`fresh == false`) a destination may already exist owned by a
+/// mapped subordinate UID (a provision script wrote it), so a re-copy can hit
+/// EACCES; the existing copy persists, so the error is tolerated.
+fn copy_host_files(
+    rootfs: &Path,
+    environments: &[String],
+    registry: &PluginRegistry,
+    fresh: bool,
+) -> Result<(), IsolaError> {
+    let Some(home) = std::env::var("HOME").ok().map(PathBuf::from) else {
+        return Ok(());
+    };
+    for env in environments {
+        let Some(plugin) = registry.get(env) else {
+            continue;
+        };
+        for entry in &plugin.manifest.paths.host_copy {
+            let src = home.join(&entry.from);
+            if !src.exists() {
+                continue;
+            }
+            let dst = rootfs.join("home/sandbox").join(&entry.to);
+            let res = if src.is_dir() {
+                copy_dir_recursive(&src, &dst)
+            } else {
+                if let Some(parent) = dst.parent() {
+                    std::fs::create_dir_all(parent).io_ctx("create dir", parent)?;
+                }
+                std::fs::copy(&src, &dst).io_ctx("copy", &src).map(|_| ())
+            };
+            match res {
+                Ok(()) => {}
+                Err(_) if !fresh => { /* keep existing copy on reprovision */ }
+                Err(e) => return Err(e),
+            }
+        }
+    }
     Ok(())
 }
 

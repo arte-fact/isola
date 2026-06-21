@@ -290,27 +290,7 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
     if let Some(uid) = args.run_as_uid
         && got_multi_uid
     {
-        let gid = nix::unistd::Gid::from_raw(uid);
-
-        if args.devices.is_empty() {
-            // No device mounts: load supplementary groups from the rootfs
-            // /etc/group. Non-fatal if it fails.
-            let username = std::ffi::CString::new("sandbox").unwrap();
-            if let Err(e) = nix::unistd::initgroups(&username, gid) {
-                eprintln!("warning: initgroups failed: {e}");
-            }
-        }
-        // When devices are mounted (GPU passthrough), we intentionally skip
-        // initgroups to preserve the host user's supplementary groups
-        // (e.g. render GID 993). The namespace GID map doesn't include
-        // these host GIDs, so sandbox-side groups set by the GPU plugin
-        // map to wrong host GIDs. Inheriting host groups is the only way
-        // to access bind-mounted device nodes.
-
-        nix::unistd::setgid(gid)
-            .map_err(|e| IsolaError::NamespaceError(format!("setgid({uid}) failed: {e}")))?;
-        nix::unistd::setuid(nix::unistd::Uid::from_raw(uid))
-            .map_err(|e| IsolaError::NamespaceError(format!("setuid({uid}) failed: {e}")))?;
+        drop_to_sandbox_user(uid, &args.devices)?;
     }
 
     // Start in the workspace directory (named after the host directory)
@@ -326,17 +306,7 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
 
     // Redirect stdout+stderr to output pipe if requested
     if args.output_pipe_write >= 0 {
-        unsafe {
-            if libc::dup2(args.output_pipe_write, 1) < 0 {
-                libc::_exit(126);
-            }
-            if libc::dup2(args.output_pipe_write, 2) < 0 {
-                libc::_exit(126);
-            }
-            if args.output_pipe_write > 2 {
-                libc::close(args.output_pipe_write);
-            }
-        }
+        redirect_stdio_to(args.output_pipe_write);
     }
 
     // Exec
@@ -346,6 +316,44 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
     nix::unistd::execve(&args.exec_path, &args_refs, &env_refs)
         .map_err(|e| IsolaError::NamespaceError(format!("execve failed: {e}")))?;
     unreachable!()
+}
+
+/// Drop from root to the sandbox user (uid == gid).
+///
+/// With no device mounts we load the rootfs's supplementary groups via
+/// `initgroups`. When GPU devices are bind-mounted we deliberately skip that and
+/// keep the host's supplementary groups (e.g. render GID 993): the namespace GID
+/// map doesn't include those host GIDs, so inheriting them is the only way the
+/// sandbox user can access the bind-mounted device nodes.
+fn drop_to_sandbox_user(uid: u32, devices: &[String]) -> Result<(), IsolaError> {
+    let gid = nix::unistd::Gid::from_raw(uid);
+    if devices.is_empty() {
+        let username = std::ffi::CString::new("sandbox").unwrap();
+        if let Err(e) = nix::unistd::initgroups(&username, gid) {
+            eprintln!("warning: initgroups failed: {e}");
+        }
+    }
+    nix::unistd::setgid(gid)
+        .map_err(|e| IsolaError::NamespaceError(format!("setgid({uid}) failed: {e}")))?;
+    nix::unistd::setuid(nix::unistd::Uid::from_raw(uid))
+        .map_err(|e| IsolaError::NamespaceError(format!("setuid({uid}) failed: {e}")))?;
+    Ok(())
+}
+
+/// Point stdout+stderr at `fd` (used to capture provisioning output). On failure
+/// the child exits 126 rather than continuing with the wrong stdio.
+fn redirect_stdio_to(fd: i32) {
+    unsafe {
+        if libc::dup2(fd, 1) < 0 {
+            libc::_exit(126);
+        }
+        if libc::dup2(fd, 2) < 0 {
+            libc::_exit(126);
+        }
+        if fd > 2 {
+            libc::close(fd);
+        }
+    }
 }
 
 /// Spawn a sandbox child without waiting. The caller can read captured output

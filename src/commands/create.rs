@@ -210,7 +210,7 @@ fn run_linux(req: CreateRequest) -> Result<(), IsolaError> {
         rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
         progress.finish_step("Extracted cached layers");
 
-        // Build each uncached layer
+        // Build (and cache) each uncached layer.
         for layer_name in &status.uncached {
             let script = if layer_name == "base" {
                 rootfs::build_base_layer_script(shell)
@@ -221,8 +221,7 @@ fn run_linux(req: CreateRequest) -> Result<(), IsolaError> {
             };
 
             progress.start_step(&format!("Provisioning {layer_name}..."));
-
-            // Save config early so run_command_captured can find the sandbox
+            // Save config early so run_command_captured can find the sandbox.
             save_config(
                 name,
                 &workspace,
@@ -232,40 +231,8 @@ fn run_linux(req: CreateRequest) -> Result<(), IsolaError> {
                 plugin_vars,
             )?;
 
-            let child = crate::commands::enter::run_command_captured(name, &script)?;
-            let (exit_code, last_lines) =
-                progress::monitor_provisioning(child, &progress, &script)?;
-            if exit_code != 0 {
-                progress.finish_error(exit_code, &last_lines);
-                return Err(IsolaError::ProvisionFailed(exit_code));
-            }
-
-            // Cache the layer
-            if layer_name == "base" {
-                progress.start_step("Caching base layer...");
-                let res = run_cache_script_and_move(
-                    name,
-                    &rootfs::build_base_cache_script(),
-                    &progress,
-                    || rootfs::cache_base_layer(name, shell).map(|_| ()),
-                );
-                match res {
-                    Ok(()) => progress.finish_step("Cached base layer"),
-                    Err(e) => progress.finish_step(&format!("Cache skipped: {e}")),
-                }
-            } else {
-                match rootfs::cache_env_layer(name, layer_name, shell, registry, plugin_vars) {
-                    Ok(Some(_)) => {
-                        progress.finish_step(&format!("Cached {layer_name} layer"));
-                    }
-                    Ok(None) => {
-                        progress.finish_step(&format!("Provisioned {layer_name} (no cache file)"));
-                    }
-                    Err(e) => {
-                        progress.finish_step(&format!("Cache skipped for {layer_name}: {e}"));
-                    }
-                }
-            }
+            provision_one_layer(name, &script, &progress)?;
+            cache_one_layer(name, layer_name, shell, registry, plugin_vars, &progress);
         }
         // Some layers were extracted from cache; base/env layers don't carry
         // host_copy configs, but treat it as cache-derived to be safe.
@@ -361,6 +328,53 @@ fn run_linux(req: CreateRequest) -> Result<(), IsolaError> {
     }
 
     Ok(())
+}
+
+/// Run one layer's provisioning script in the sandbox, surfacing failures.
+#[cfg(target_os = "linux")]
+fn provision_one_layer(
+    name: &str,
+    script: &str,
+    progress: &crate::progress::CreationProgress,
+) -> Result<(), IsolaError> {
+    let child = crate::commands::enter::run_command_captured(name, script)?;
+    let (exit_code, last_lines) = crate::progress::monitor_provisioning(child, progress, script)?;
+    if exit_code != 0 {
+        progress.finish_error(exit_code, &last_lines);
+        return Err(IsolaError::ProvisionFailed(exit_code));
+    }
+    Ok(())
+}
+
+/// Capture a freshly provisioned layer into the layer cache (best-effort: a
+/// cache failure is reported via progress but never fails the create).
+#[cfg(target_os = "linux")]
+fn cache_one_layer(
+    name: &str,
+    layer_name: &str,
+    shell: &SandboxShell,
+    registry: &PluginRegistry,
+    plugin_vars: &BTreeMap<String, String>,
+    progress: &crate::progress::CreationProgress,
+) {
+    use crate::sandbox::rootfs;
+    if layer_name == "base" {
+        progress.start_step("Caching base layer...");
+        let res =
+            run_cache_script_and_move(name, &rootfs::build_base_cache_script(), progress, || {
+                rootfs::cache_base_layer(name, shell).map(|_| ())
+            });
+        match res {
+            Ok(()) => progress.finish_step("Cached base layer"),
+            Err(e) => progress.finish_step(&format!("Cache skipped: {e}")),
+        }
+    } else {
+        match rootfs::cache_env_layer(name, layer_name, shell, registry, plugin_vars) {
+            Ok(Some(_)) => progress.finish_step(&format!("Cached {layer_name} layer")),
+            Ok(None) => progress.finish_step(&format!("Provisioned {layer_name} (no cache file)")),
+            Err(e) => progress.finish_step(&format!("Cache skipped for {layer_name}: {e}")),
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]

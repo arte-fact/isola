@@ -121,42 +121,8 @@ pub fn setup_mounts(
         )?;
     }
 
-    // 7b. Bind-mount device nodes from host (GPU passthrough, etc.)
-    for device_path in devices {
-        let host_dev = Path::new(device_path);
-        if !host_dev.exists() {
-            continue;
-        }
-        let relative = host_dev.strip_prefix("/dev/").unwrap_or(host_dev.as_ref());
-        let container_dev = dev_path.join(relative);
-
-        if host_dev.is_dir() {
-            std::fs::create_dir_all(&container_dev)?;
-        } else {
-            if let Some(parent) = container_dev.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            std::fs::File::create(&container_dev)?;
-        }
-
-        do_mount(
-            &format!("device {device_path}"),
-            Some(device_path),
-            &container_dev,
-            none,
-            MsFlags::MS_BIND,
-            none,
-        )?;
-    }
-
-    // 7c. When NVIDIA devices are passed through, bind-mount the host's
-    // userspace driver libraries (libcuda, libnvidia-*, ...) and tools so CUDA
-    // workloads can run. They must match the host kernel module exactly, hence
-    // bind-mounting from the host rather than installing a package. `ldconfig`
-    // is run inside the sandbox (see namespace.rs) so the loader picks them up.
-    if devices.iter().any(|d| d.contains("nvidia")) {
-        setup_nvidia_libs(rootfs);
-    }
+    // 7b/7c. Pass through host device nodes (GPU, etc.) and NVIDIA driver libs.
+    mount_passthrough_devices(rootfs, &dev_path, devices)?;
 
     // 8. Create /dev symlinks
     std::os::unix::fs::symlink("/proc/self/fd", dev_path.join("fd"))?;
@@ -233,6 +199,69 @@ pub fn setup_mounts(
     }
 
     // 13. Plugin-declared host directory bind-mounts (host_mount in plugin.yaml)
+    mount_host_dirs(rootfs, host_mounts)?;
+
+    // 13b. Shared package-manager caches (plugin `cache:` declarations).
+    mount_caches(rootfs, cache_mounts)?;
+
+    // 14. Display sharing (X11/Wayland) when requested
+    if share_display {
+        mount_display(rootfs, &tmp_path)?;
+    }
+
+    Ok(())
+}
+
+/// Bind-mount passed-through host device nodes (GPU, etc.) into the sandbox /dev.
+/// When NVIDIA nodes appear, also bind-mount the host's userspace driver
+/// libraries (they must match the running host kernel module exactly, so they
+/// come from the host rather than a package; `ldconfig` runs inside the sandbox).
+fn mount_passthrough_devices(
+    rootfs: &Path,
+    dev_path: &Path,
+    devices: &[String],
+) -> Result<(), IsolaError> {
+    let none: Option<&str> = None;
+    for device_path in devices {
+        let host_dev = Path::new(device_path);
+        if !host_dev.exists() {
+            continue;
+        }
+        let relative = host_dev.strip_prefix("/dev/").unwrap_or(host_dev.as_ref());
+        let container_dev = dev_path.join(relative);
+
+        if host_dev.is_dir() {
+            std::fs::create_dir_all(&container_dev)?;
+        } else {
+            if let Some(parent) = container_dev.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::File::create(&container_dev)?;
+        }
+
+        do_mount(
+            &format!("device {device_path}"),
+            Some(device_path),
+            &container_dev,
+            none,
+            MsFlags::MS_BIND,
+            none,
+        )?;
+    }
+
+    if devices.iter().any(|d| d.contains("nvidia")) {
+        setup_nvidia_libs(rootfs);
+    }
+    Ok(())
+}
+
+/// Bind-mount host directories declared by plugins (`host_mount`) under
+/// /home/sandbox, remounting read-only where requested.
+fn mount_host_dirs(
+    rootfs: &Path,
+    host_mounts: &[(String, String, bool)],
+) -> Result<(), IsolaError> {
+    let none: Option<&str> = None;
     let home = std::env::var("HOME").unwrap_or_default();
     for (from, to, readonly) in host_mounts {
         let src = PathBuf::from(&home).join(from);
@@ -268,11 +297,14 @@ pub fn setup_mounts(
             eprintln!("warning: could not remount {from} read-only: {e}");
         }
     }
+    Ok(())
+}
 
-    // 13b. Shared package-manager caches (plugin `cache:` declarations). Each is
-    // a host directory bind-mounted at an absolute sandbox path so build tools
-    // reuse downloads across sandboxes. The host directory is created by the
-    // backend before clone(); skip silently if it is missing.
+/// Bind-mount shared package-manager caches at their absolute sandbox paths so
+/// build tools reuse downloads across sandboxes. The host directories are
+/// created by the backend before clone(); a missing one is skipped silently.
+fn mount_caches(rootfs: &Path, cache_mounts: &[(String, String)]) -> Result<(), IsolaError> {
+    let none: Option<&str> = None;
     for (host_src, sandbox_dest) in cache_mounts {
         let src = Path::new(host_src);
         if !src.is_dir() {
@@ -290,54 +322,39 @@ pub fn setup_mounts(
             none,
         )?;
     }
+    Ok(())
+}
 
-    // 14. Display sharing (X11/Wayland) when requested
-    if share_display {
-        // X11: bind-mount /tmp/.X11-unix into the tmpfs already mounted at tmp_path
-        if Path::new("/tmp/.X11-unix").exists() {
-            let x11_target = tmp_path.join(".X11-unix");
-            std::fs::create_dir_all(&x11_target)?;
+/// Share the host display: X11 socket dir, the Wayland socket, and Xauthority.
+fn mount_display(rootfs: &Path, tmp_path: &Path) -> Result<(), IsolaError> {
+    let none: Option<&str> = None;
+
+    // X11: bind-mount /tmp/.X11-unix into the tmpfs already mounted at tmp_path
+    if Path::new("/tmp/.X11-unix").exists() {
+        let x11_target = tmp_path.join(".X11-unix");
+        std::fs::create_dir_all(&x11_target)?;
+        do_mount(
+            "X11 sockets",
+            Some("/tmp/.X11-unix"),
+            &x11_target,
+            none,
+            MsFlags::MS_BIND | MsFlags::MS_REC,
+            none,
+        )?;
+    }
+
+    // Wayland: bind-mount socket file into /run/user/1000/
+    let host_xdg =
+        std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
+    if let Ok(wayland) = std::env::var("WAYLAND_DISPLAY") {
+        let host_sock = PathBuf::from(&host_xdg).join(&wayland);
+        if host_sock.exists() {
+            let sandbox_sock = rootfs.join("run/user/1000").join(&wayland);
+            std::fs::File::create(&sandbox_sock)?;
             do_mount(
-                "X11 sockets",
-                Some("/tmp/.X11-unix"),
-                &x11_target,
-                none,
-                MsFlags::MS_BIND | MsFlags::MS_REC,
-                none,
-            )?;
-        }
-
-        // Wayland: bind-mount socket file into /run/user/1000/
-        let host_xdg =
-            std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".to_string());
-        if let Ok(wayland) = std::env::var("WAYLAND_DISPLAY") {
-            let host_sock = PathBuf::from(&host_xdg).join(&wayland);
-            if host_sock.exists() {
-                let sandbox_sock = rootfs.join("run/user/1000").join(&wayland);
-                std::fs::File::create(&sandbox_sock)?;
-                do_mount(
-                    "wayland socket",
-                    Some(&host_sock.to_string_lossy()),
-                    &sandbox_sock,
-                    none,
-                    MsFlags::MS_BIND,
-                    none,
-                )?;
-            }
-        }
-
-        // Xauthority: bind-mount to /home/sandbox/.Xauthority
-        let xauth = std::env::var("XAUTHORITY").unwrap_or_else(|_| {
-            format!("{}/.Xauthority", std::env::var("HOME").unwrap_or_default())
-        });
-        let xauth_path = PathBuf::from(&xauth);
-        if xauth_path.exists() {
-            let sandbox_xauth = rootfs.join("home/sandbox/.Xauthority");
-            std::fs::File::create(&sandbox_xauth)?;
-            do_mount(
-                "Xauthority",
-                Some(&xauth_path.to_string_lossy()),
-                &sandbox_xauth,
+                "wayland socket",
+                Some(&host_sock.to_string_lossy()),
+                &sandbox_sock,
                 none,
                 MsFlags::MS_BIND,
                 none,
@@ -345,6 +362,22 @@ pub fn setup_mounts(
         }
     }
 
+    // Xauthority: bind-mount to /home/sandbox/.Xauthority
+    let xauth = std::env::var("XAUTHORITY")
+        .unwrap_or_else(|_| format!("{}/.Xauthority", std::env::var("HOME").unwrap_or_default()));
+    let xauth_path = PathBuf::from(&xauth);
+    if xauth_path.exists() {
+        let sandbox_xauth = rootfs.join("home/sandbox/.Xauthority");
+        std::fs::File::create(&sandbox_xauth)?;
+        do_mount(
+            "Xauthority",
+            Some(&xauth_path.to_string_lossy()),
+            &sandbox_xauth,
+            none,
+            MsFlags::MS_BIND,
+            none,
+        )?;
+    }
     Ok(())
 }
 
