@@ -66,22 +66,22 @@ fn blocked_syscalls() -> [libc::c_long; 10] {
     ]
 }
 
-/// Install the seccomp denylist on the calling thread. Requires CAP_SYS_ADMIN
-/// in the current user namespace (held by the namespace creator before it drops
-/// privileges), so it does not need — and does not set — `no_new_privs`.
-pub fn apply_denylist() -> Result<(), IsolaError> {
+/// Build the classic-BPF program for the denylist. Pure (no syscalls), so it is
+/// unit-tested directly.
+///
+/// Program layout:
+///   [0]      load arch
+///   [1]      if arch == x86_64 -> skip kill, else fall through
+///   [2]      RET kill            (blocks 32-bit/x32 syscall-number bypass)
+///   [3]      load syscall nr
+///   [4..4+n] one JEQ per blocked syscall -> jump to ERRNO return
+///   [4+n]    RET allow
+///   [5+n]    RET errno
+fn build_filter_program() -> Vec<libc::sock_filter> {
     let blocked = blocked_syscalls();
     let n = blocked.len();
     let errno_ret = SECCOMP_RET_ERRNO | (libc::EPERM as u32);
 
-    // Program layout:
-    //   [0]      load arch
-    //   [1]      if arch == x86_64 -> skip kill, else fall through
-    //   [2]      RET kill            (blocks 32-bit/x32 syscall-number bypass)
-    //   [3]      load syscall nr
-    //   [4..4+n] one JEQ per blocked syscall -> jump to ERRNO return
-    //   [4+n]    RET allow
-    //   [5+n]    RET errno
     let mut prog: Vec<libc::sock_filter> = Vec::with_capacity(n + 6);
     prog.push(stmt(BPF_LD | BPF_W | BPF_ABS, OFF_ARCH));
     prog.push(jump(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0));
@@ -94,6 +94,14 @@ pub fn apply_denylist() -> Result<(), IsolaError> {
     }
     prog.push(stmt(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
     prog.push(stmt(BPF_RET | BPF_K, errno_ret));
+    prog
+}
+
+/// Install the seccomp denylist on the calling thread. Requires CAP_SYS_ADMIN
+/// in the current user namespace (held by the namespace creator before it drops
+/// privileges), so it does not need — and does not set — `no_new_privs`.
+pub fn apply_denylist() -> Result<(), IsolaError> {
+    let mut prog = build_filter_program();
 
     let fprog = libc::sock_fprog {
         len: prog.len() as u16,
@@ -116,4 +124,80 @@ pub fn apply_denylist() -> Result<(), IsolaError> {
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn program_has_expected_shape() {
+        let prog = build_filter_program();
+        let n = blocked_syscalls().len();
+        // header(4) + one JEQ per blocked syscall + allow + errno
+        assert_eq!(prog.len(), n + 6);
+
+        // [0] load arch, [1] JEQ x86_64, [2] kill, [3] load nr
+        assert_eq!(prog[0].code, BPF_LD | BPF_W | BPF_ABS);
+        assert_eq!(prog[0].k, OFF_ARCH);
+        assert_eq!(prog[1].code, BPF_JMP | BPF_JEQ | BPF_K);
+        assert_eq!(prog[1].k, AUDIT_ARCH_X86_64);
+        assert_eq!((prog[1].jt, prog[1].jf), (1, 0));
+        assert_eq!(prog[2].code, BPF_RET | BPF_K);
+        assert_eq!(prog[2].k, SECCOMP_RET_KILL_PROCESS);
+        assert_eq!(prog[3].code, BPF_LD | BPF_W | BPF_ABS);
+        assert_eq!(prog[3].k, OFF_NR);
+    }
+
+    #[test]
+    fn terminals_allow_then_errno() {
+        let prog = build_filter_program();
+        let n = blocked_syscalls().len();
+        // default action = allow
+        assert_eq!(prog[4 + n].code, BPF_RET | BPF_K);
+        assert_eq!(prog[4 + n].k, SECCOMP_RET_ALLOW);
+        // match action = errno(EPERM)
+        assert_eq!(prog[5 + n].code, BPF_RET | BPF_K);
+        assert_eq!(prog[5 + n].k, SECCOMP_RET_ERRNO | (libc::EPERM as u32));
+    }
+
+    #[test]
+    fn each_blocked_syscall_jumps_to_errno() {
+        let prog = build_filter_program();
+        let blocked = blocked_syscalls();
+        let n = blocked.len();
+        let errno_idx = 5 + n;
+        for (i, nr) in blocked.iter().enumerate() {
+            let idx = 4 + i;
+            let insn = &prog[idx];
+            assert_eq!(insn.code, BPF_JMP | BPF_JEQ | BPF_K);
+            assert_eq!(
+                insn.k, *nr as u32,
+                "JEQ at {idx} matches the blocked syscall"
+            );
+            // Taken branch (jt) must land exactly on the ERRNO return.
+            let target = idx + 1 + insn.jt as usize;
+            assert_eq!(target, errno_idx, "blocked syscall {nr} routes to errno");
+            assert_eq!(insn.jf, 0, "fall-through continues to the next check");
+        }
+    }
+
+    #[test]
+    fn blocks_known_escape_syscalls_but_not_ptrace() {
+        let blocked: Vec<libc::c_long> = blocked_syscalls().to_vec();
+        for nr in [
+            libc::SYS_bpf,
+            libc::SYS_keyctl,
+            libc::SYS_init_module,
+            libc::SYS_finit_module,
+            libc::SYS_kexec_load,
+            libc::SYS_open_by_handle_at,
+        ] {
+            assert!(blocked.contains(&nr), "expected syscall {nr} to be blocked");
+        }
+        // Dev/debug tools must keep working.
+        assert!(!blocked.contains(&libc::SYS_ptrace));
+        assert!(!blocked.contains(&libc::SYS_perf_event_open));
+        assert!(!blocked.contains(&libc::SYS_mount));
+    }
 }

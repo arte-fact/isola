@@ -128,3 +128,21 @@ fn status_nonexistent_fails() {
         "status of nonexistent sandbox should fail"
     );
 }
+
+/// `enter` and `exec` on a missing sandbox must report a clean "not found"
+/// error, not a raw IO error from loading the config.
+#[test]
+fn enter_and_exec_nonexistent_report_not_found() {
+    for args in [
+        vec!["enter", "this-sandbox-does-not-exist-12345"],
+        vec!["exec", "this-sandbox-does-not-exist-12345", "--", "true"],
+    ] {
+        let out = common::isola(&args).output().expect("failed to run isola");
+        assert!(!out.status.success(), "{args:?} should fail");
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            stderr.contains("not found"),
+            "{args:?}: expected 'not found', got: {stderr}"
+        );
+    }
+}
