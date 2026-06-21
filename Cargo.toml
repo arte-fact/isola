@@ -14,13 +14,13 @@ flate2 = "1"
 tar = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 inquire = "0.9"
 indicatif = "0.18"
 clap_complete = "4"
 console = "0.16.3"
+serde_yaml_ng = "0.10.0"
 
 [[bin]]
 name = "isola-uidmap"

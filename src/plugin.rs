@@ -263,7 +263,7 @@ impl PluginRegistry {
 
         // Lowest priority: bundled defaults
         for bp in BUNDLED_PLUGINS {
-            match serde_yaml::from_str::<PluginManifest>(bp.manifest_yaml) {
+            match serde_yaml_ng::from_str::<PluginManifest>(bp.manifest_yaml) {
                 Ok(manifest) => {
                     let name = manifest.name.clone();
                     by_name.insert(
@@ -369,7 +369,7 @@ fn load_plugins_from_dir(dir: &Path, source: PluginSource) -> Vec<Plugin> {
             Err(_) => continue,
         };
 
-        let manifest: PluginManifest = match serde_yaml::from_str(&manifest_str) {
+        let manifest: PluginManifest = match serde_yaml_ng::from_str(&manifest_str) {
             Ok(m) => m,
             Err(e) => {
                 eprintln!(

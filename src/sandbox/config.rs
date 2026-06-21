@@ -172,7 +172,7 @@ impl LocalConfig {
         let path = paths::local_config_path(dir);
         match std::fs::read_to_string(&path) {
             Ok(data) => {
-                let config: Self = serde_yaml::from_str(&data)
+                let config: Self = serde_yaml_ng::from_str(&data)
                     .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
                 Ok(Some(config))
             }
@@ -188,7 +188,7 @@ impl LocalConfig {
             std::fs::create_dir_all(parent)?;
         }
         let data =
-            serde_yaml::to_string(self).map_err(|e| IsolaError::ConfigError(e.to_string()))?;
+            serde_yaml_ng::to_string(self).map_err(|e| IsolaError::ConfigError(e.to_string()))?;
         std::fs::write(&path, data)?;
         Ok(())
     }
@@ -319,8 +319,8 @@ mod tests {
             plugin_vars: None,
         };
 
-        let yaml = serde_yaml::to_string(&config).unwrap();
-        let deserialized: LocalConfig = serde_yaml::from_str(&yaml).unwrap();
+        let yaml = serde_yaml_ng::to_string(&config).unwrap();
+        let deserialized: LocalConfig = serde_yaml_ng::from_str(&yaml).unwrap();
 
         assert_eq!(
             deserialized.environments,
@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn local_config_partial_fields() {
         let yaml = "environments:\n  - rust\n";
-        let config: LocalConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: LocalConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert_eq!(config.environments, Some(vec!["rust".to_string()]));
         assert!(config.shell.is_none());
         assert!(config.share_display.is_none());
@@ -341,7 +341,7 @@ mod tests {
     #[test]
     fn local_config_empty() {
         let yaml = "{}";
-        let config: LocalConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: LocalConfig = serde_yaml_ng::from_str(yaml).unwrap();
         assert!(config.environments.is_none());
         assert!(config.shell.is_none());
     }
