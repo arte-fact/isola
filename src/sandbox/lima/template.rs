@@ -29,8 +29,9 @@ mounts:
 
     if let Some(ws) = workspace {
         yaml.push_str(&format!(
-            "  - location: \"{}\"\n    mountPoint: \"/workspace\"\n    writable: true\n",
-            ws.display()
+            "  - location: \"{}\"\n    mountPoint: \"{}\"\n    writable: true\n",
+            ws.display(),
+            crate::paths::workspace_mount_point(ws)
         ));
     }
 

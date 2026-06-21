@@ -167,13 +167,10 @@ pub fn setup_mounts(
         none,
     )?;
 
-    // 11. Bind-mount workspace (if provided), using the actual directory name
+    // 11. Bind-mount workspace (if provided) at /<dirname> inside the sandbox.
     if let Some(ws) = workspace_host {
-        let dir_name = ws
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("workspace");
-        let ws_target = rootfs.join(dir_name);
+        let mount_point = crate::paths::workspace_mount_point(ws);
+        let ws_target = rootfs.join(mount_point.trim_start_matches('/'));
         std::fs::create_dir_all(&ws_target)?;
         do_mount(
             "workspace",

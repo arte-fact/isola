@@ -185,7 +185,7 @@ mkdir -p /etc/apt/apt.conf.d
 echo 'APT::Sandbox::User "root";' > /etc/apt/apt.conf.d/99sandbox
 
 # Create directories
-mkdir -p /home/sandbox/.claude /root/.claude /workspace /usr/local/bin
+mkdir -p /home/sandbox/.claude /root/.claude /usr/local/bin
 
 # Claude settings
 cat > /home/sandbox/.claude/settings.json << 'ISOLA_SETTINGS_EOF'
@@ -197,7 +197,6 @@ cp /home/sandbox/.claude/settings.json /root/.claude/settings.json
 cat > /home/sandbox/.claude/CLAUDE.md << 'ISOLA_MD_EOF'
 {claude_md}
 ISOLA_MD_EOF
-cp /home/sandbox/.claude/CLAUDE.md /workspace/CLAUDE.md
 
 # Session credentials symlink
 mkdir -p /tmp/isola-session
@@ -312,8 +311,13 @@ impl SandboxBackend for LimaBackend {
                 .status()
         } else {
             let shell_bin = config.shell.bin_path();
+            let ws_dir = config
+                .workspace
+                .as_deref()
+                .map(paths::workspace_mount_point)
+                .unwrap_or_else(|| "/workspace".to_string());
             let cmd = format!(
-                "export PATH='{sandbox_path}' && {env_exports}cd /workspace 2>/dev/null; exec {shell_bin} -l"
+                "export PATH='{sandbox_path}' && {env_exports}cd {ws_dir} 2>/dev/null; exec {shell_bin} -l"
             );
             Command::new("limactl")
                 .args([
@@ -358,13 +362,19 @@ impl SandboxBackend for LimaBackend {
         Self::ensure_vm_running(name)?;
         let vm = Self::vm_name(name);
         let env_exports = Self::build_env_exports();
+        let config = crate::sandbox::config::SandboxConfig::load(name)?;
+        let ws_dir = config
+            .workspace
+            .as_deref()
+            .map(paths::workspace_mount_point)
+            .unwrap_or_else(|| "/workspace".to_string());
 
         let cmd_str = command
             .iter()
             .map(|s| shell_escape(s))
             .collect::<Vec<_>>()
             .join(" ");
-        let full_cmd = format!("{env_exports}cd /workspace 2>/dev/null; exec {cmd_str}");
+        let full_cmd = format!("{env_exports}cd {ws_dir} 2>/dev/null; exec {cmd_str}");
 
         let status = Command::new("limactl")
             .args([

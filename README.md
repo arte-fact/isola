@@ -113,8 +113,8 @@ your host with kernel namespaces (Linux) or a lightweight VM (macOS).
 Key facts:
 
 - **Your workspace is mounted at `/<dirname>`** — a project at `~/code/my-project`
-  appears as `/my-project` inside. It's the same files as on the host. (On macOS,
-  the Lima backend mounts it at `/workspace` instead.)
+  appears as `/my-project` inside, on both Linux and macOS. It's the same files
+  as on the host.
 - **Everything else persists** in `~/.isola/sandboxes/<name>/rootfs/` and survives
   across sessions. Delete it with `isola destroy <name>`.
 - **Files you create in the workspace are owned by you** on the host (the
@@ -215,5 +215,4 @@ compatible GPU is detected on the host. Details in
 
 ## License
 
-No license has been chosen yet, so default copyright applies (all rights
-reserved). Add a `LICENSE` file before publishing if you intend others to use it.
+Licensed under the [Apache License 2.0](LICENSE).

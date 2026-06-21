@@ -120,7 +120,7 @@ pub fn write_id_mappings(child_pid: i32, multi_uid: bool) -> Result<bool, IsolaE
         let pid_str = child_pid.to_string();
 
         // Map UID 1000 (sandbox user) to the host user's real UID so that
-        // files created in /workspace are owned by the host user.
+        // files created in the workspace are owned by the host user.
         //   Inside 0       → sub_uid_start          [1]
         //   Inside 1       → sub_uid_start+1        [999]
         //   Inside 1000    → host_uid               [1]

@@ -39,6 +39,18 @@ pub fn session_credentials() -> PathBuf {
     session_dir().join("credentials.json")
 }
 
+/// The mount point inside the sandbox for a workspace directory: `/<dirname>`
+/// (e.g. `~/code/my-app` → `/my-app`), falling back to `/workspace` when the
+/// directory name can't be determined. Shared by both backends so the workspace
+/// path is identical on Linux and macOS.
+pub fn workspace_mount_point(workspace: &Path) -> String {
+    workspace
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|n| format!("/{n}"))
+        .unwrap_or_else(|| "/workspace".to_string())
+}
+
 /// Path to the project-local config: `<dir>/.isola/config.yaml`
 pub fn local_config_path(project_dir: &Path) -> PathBuf {
     project_dir.join(".isola").join("config.yaml")
@@ -161,6 +173,17 @@ mod tests {
     fn layer_cache_path_neovim() {
         let path = layer_cache_path("neovim", "789abc", "bash");
         assert!(path.ends_with("layers/env-neovim-789abc.tar.gz"));
+    }
+
+    #[test]
+    fn workspace_mount_point_uses_dir_name() {
+        assert_eq!(
+            workspace_mount_point(Path::new("/home/me/code/my-app")),
+            "/my-app"
+        );
+        assert_eq!(workspace_mount_point(Path::new("/tmp/proj")), "/proj");
+        // No final component → fall back to /workspace.
+        assert_eq!(workspace_mount_point(Path::new("/")), "/workspace");
     }
 
     #[test]

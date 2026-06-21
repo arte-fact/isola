@@ -64,7 +64,7 @@ You are running inside {isolation_desc}.
         r#"
 - **User**: sandbox (non-root)
 - **Network**: Full unrestricted internet access (shared with host)
-- **Workspace**: /workspace (bind-mounted from host project directory, read-write)
+- **Workspace**: your host project directory, bind-mounted read-write at `/<project-name>`
 
 ## Running privileged commands
 Use sudo with the password "sandbox" for any privileged operation:
@@ -104,8 +104,8 @@ echo "sandbox" | sudo -S <command>
     md.push_str(
         r#"
 ## Important
-- Changes to `/workspace` are reflected on the host filesystem immediately.
-- Changes outside `/workspace` persist across sandbox sessions (persistent sandbox).
+- Changes to your workspace directory are reflected on the host filesystem immediately.
+- Changes outside the workspace persist across sandbox sessions (persistent sandbox).
 - You cannot see or affect host processes. Your PID namespace is isolated.
 - You are free to run any command without restriction.
 "#,

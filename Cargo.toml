@@ -5,6 +5,7 @@ edition = "2024"
 description = "Persistent, isolated developer sandboxes — no Docker, no root."
 repository = "https://github.com/arte-fact/isola"
 readme = "README.md"
+license = "Apache-2.0"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

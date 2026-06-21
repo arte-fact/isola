@@ -298,9 +298,7 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
         .workspace_host
         .as_ref()
         .and_then(|s| s.to_str().ok())
-        .and_then(|s| std::path::Path::new(s).file_name())
-        .and_then(|n| n.to_str())
-        .map(|n| format!("/{n}"))
+        .map(|s| crate::paths::workspace_mount_point(std::path::Path::new(s)))
         .unwrap_or_else(|| "/".to_string());
     let _ = nix::unistd::chdir(workspace_dir.as_str());
 
