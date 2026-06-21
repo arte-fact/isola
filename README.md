@@ -206,8 +206,38 @@ device nodes into the sandbox and bind-mounts the matching driver libraries, so
 compatible GPU is detected on the host. Details in
 **[docs/caching.md](docs/caching.md)** and the plugin docs.
 
+## Use it as a library
+
+The sandbox engine is a separate crate, **`isola-core`**, so your own Rust
+program can create, run-things-in, and destroy sandboxes — handy for boxing in
+AI agents, build steps, or untrusted code. The `isola` CLI is just a thin layer
+over it.
+
+```toml
+[dependencies]
+isola-core = { git = "https://github.com/arte-fact/isola", tag = "v1.1.0", package = "isola-core" }
+```
+
+```rust
+use isola_core::{NoProgress, Sandbox, SandboxSpec};
+
+let spec = SandboxSpec {
+    plugins: vec!["python-uv".into(), "git".into()],
+    ..SandboxSpec::new("task-42")
+};
+let sb = Sandbox::create(&spec, &NoProgress)?;          // download + provision
+let code = sb.exec(&["python".into(), "agent.py".into()], None, vec![])?;
+sb.destroy()?;
+```
+
+Full library guide: **[crates/isola-core/README.md](crates/isola-core/README.md)**.
+
+This repo is a Cargo workspace: `crates/isola-core` (library), `crates/isola-cli`
+(the `isola` binary), `crates/isola-uidmap` (the setuid helper).
+
 ## Documentation
 
+- **[crates/isola-core/README.md](crates/isola-core/README.md)** — using `isola-core` as a library in a Rust project.
 - **[docs/plugins.md](docs/plugins.md)** — using and authoring plugins; manifest reference.
 - **[docs/security.md](docs/security.md)** — the isolation model: what's isolated, what's shared, the threat model.
 - **[docs/caching.md](docs/caching.md)** — how the rootfs, layer, and package caches make things fast.
