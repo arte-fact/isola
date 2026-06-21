@@ -776,22 +776,30 @@ const BASE_CACHE_FILE: &str = ".base_cache.tar.gz";
 #[cfg(target_os = "linux")]
 fn build_full_rootfs_cache_script(out: &str) -> String {
     let stem = out.trim_end_matches(".tar.gz");
+    // The tarball is written to /var/tmp (a real, persistent rootfs directory)
+    // rather than /tmp, which is a fresh tmpfs at runtime — a tarball written
+    // there would vanish when the namespace exits. /var/tmp is excluded from the
+    // archive so the in-progress tarball isn't captured in itself, and it is
+    // owned by the host user (from rootfs extraction) so the host-side move out
+    // succeeds despite the sticky bit.
     format!(
         r#"#!/bin/bash
 set -eo pipefail
 echo ">>> Capturing rootfs cache..."
-rm -f /tmp/{out} /tmp/{stem}.partial
+mkdir -p /var/tmp
+rm -f /var/tmp/{out} /var/tmp/{stem}.partial
 cd /
-tar czf /tmp/{stem}.partial \
+tar czf /var/tmp/{stem}.partial \
     --exclude=./proc/* \
     --exclude=./sys/* \
     --exclude=./dev/* \
     --exclude=./tmp/* \
     --exclude=./run/* \
+    --exclude=./var/tmp/* \
     --exclude=./workspace/* \
     .
-mv /tmp/{stem}.partial /tmp/{out}
-[ -s /tmp/{out} ] || {{ echo "error: cache tarball is empty" >&2; exit 1; }}
+mv /var/tmp/{stem}.partial /var/tmp/{out}
+[ -s /var/tmp/{out} ] || {{ echo "error: cache tarball is empty" >&2; exit 1; }}
 echo "=== Rootfs cache complete ==="
 "#
     )
@@ -829,7 +837,7 @@ pub fn cache_provisioned_rootfs(
     shell: &str,
 ) -> Result<(), IsolaError> {
     let rootfs_path = paths::rootfs_dir(name);
-    let src = rootfs_path.join("tmp").join(PROVISION_CACHE_FILE);
+    let src = rootfs_path.join("var/tmp").join(PROVISION_CACHE_FILE);
     let dest = paths::provision_cache_path(environments, shell);
     move_cache_tarball(&src, &dest)
 }
@@ -866,11 +874,12 @@ sleep 1
 #[cfg(target_os = "linux")]
 const LAYER_CAPTURE_FOOTER: &str = r#"
 echo ">>> Capturing layer..."
+mkdir -p /var/tmp
 find / -xdev -newer /tmp/.layer_marker \
     ! -path '/proc/*' ! -path '/sys/*' ! -path '/dev/*' ! -path '/tmp/*' \
-    ! -path '/workspace/*' ! -path '/run/*' \
+    ! -path '/var/tmp/*' ! -path '/workspace/*' ! -path '/run/*' \
     -print0 2>/dev/null | \
-    tar czf /tmp/.layer_cache.tar.gz --null -T - 2>/dev/null || true
+    tar czf /var/tmp/.layer_cache.tar.gz --null -T - 2>/dev/null || true
 echo "=== Layer complete ==="
 "#;
 
@@ -1093,7 +1102,7 @@ pub fn cache_base_layer(name: &str, shell: &SandboxShell) -> Result<PathBuf, Iso
     let script = build_base_layer_script(shell);
     let hash = layer_version_hash(&script);
     let cache_path = paths::layer_cache_path("base", &hash, shell.name());
-    let src = rootfs_path.join("tmp").join(BASE_CACHE_FILE);
+    let src = rootfs_path.join("var/tmp").join(BASE_CACHE_FILE);
     move_cache_tarball(&src, &cache_path)?;
     Ok(cache_path)
 }
@@ -1108,7 +1117,7 @@ pub fn cache_env_layer(
     plugin_vars: &std::collections::BTreeMap<String, String>,
 ) -> Result<Option<PathBuf>, IsolaError> {
     let rootfs_path = paths::rootfs_dir(name);
-    let layer_tar_in_rootfs = rootfs_path.join("tmp/.layer_cache.tar.gz");
+    let layer_tar_in_rootfs = rootfs_path.join("var/tmp/.layer_cache.tar.gz");
 
     if !layer_tar_in_rootfs.exists() {
         return Ok(None);
@@ -1505,7 +1514,12 @@ mod tests {
         // Atomic: write to .partial, then mv into place — never leave a
         // truncated .tar.gz that future runs would treat as a valid cache.
         assert!(s.contains(".provision_cache.partial"));
-        assert!(s.contains("mv /tmp/.provision_cache.partial /tmp/.provision_cache.tar.gz"));
+        assert!(
+            s.contains("mv /var/tmp/.provision_cache.partial /var/tmp/.provision_cache.tar.gz")
+        );
+        // The tarball must live on a persistent rootfs path (/var/tmp), not the
+        // tmpfs /tmp where it would vanish when the namespace exits.
+        assert!(s.contains("tar czf /var/tmp/.provision_cache.partial"));
         // Fail-fast on any error so a partial tarball doesn't get renamed.
         assert!(s.contains("set -eo pipefail"));
     }
@@ -1523,6 +1537,8 @@ mod tests {
                 "./dev/*",
                 "./tmp/*",
                 "./run/*",
+                // The scratch dir holding the in-progress tarball itself.
+                "./var/tmp/*",
                 "./workspace/*",
             ] {
                 assert!(s.contains(excl), "missing exclusion {excl} in:\n{s}");

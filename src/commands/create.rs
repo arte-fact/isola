@@ -184,7 +184,11 @@ fn run_linux(
         ))
     };
 
-    let used_layered_cache = if let Some(ref status) = layer_status
+    // `used_layered_cache` drives the post-extract ownership/PATH fixup;
+    // `from_cache` is true whenever the rootfs was extracted from any cache
+    // (so it already contains provisioned, possibly read-only files) — in that
+    // case post_setup_rootfs must run in tolerant mode.
+    let (used_layered_cache, from_cache) = if let Some(ref status) = layer_status
         && status.all_cached()
     {
         // Fast path: all layers cached
@@ -194,7 +198,7 @@ fn run_linux(
         }
         rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
         progress.finish_step("Extracted cached layers");
-        true
+        (true, true)
     } else if !no_cache
         && let Some(cache_path) = rootfs::has_cached_provision(environments, shell.name())
     {
@@ -203,7 +207,7 @@ fn run_linux(
         rootfs::extract_rootfs(&cache_path, &rootfs_path)?;
         rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
         progress.finish_step("Extracted cached rootfs");
-        false
+        (false, true)
     } else if let Some(ref status) = layer_status
         && !status.cached.is_empty()
     {
@@ -274,7 +278,9 @@ fn run_linux(
                 }
             }
         }
-        true
+        // Some layers were extracted from cache; base/env layers don't carry
+        // host_copy configs, but treat it as cache-derived to be safe.
+        (true, true)
     } else {
         // No cache at all: download base rootfs and do full provision
         let tarball = rootfs::ensure_rootfs_cached_with_progress(&progress)?;
@@ -282,12 +288,14 @@ fn run_linux(
         rootfs::extract_rootfs(&tarball, &rootfs_path)?;
         rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
         progress.finish_step("Extracted rootfs");
-        false
+        (false, false)
     };
 
     // Configure rootfs (sandbox-specific: hostname, git config, shell config, etc.)
+    // On a cache hit the rootfs already contains provisioned (possibly
+    // read-only) files, so run in tolerant mode.
     progress.start_step("Configuring rootfs...");
-    rootfs::post_setup_rootfs(&rootfs_path, name, environments, registry, true)?;
+    rootfs::post_setup_rootfs(&rootfs_path, name, environments, registry, !from_cache)?;
     progress.finish_step("Configured rootfs");
 
     // Save config (may already exist from partial layer build, save again to ensure latest)
