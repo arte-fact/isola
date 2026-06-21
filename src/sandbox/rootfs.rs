@@ -705,6 +705,10 @@ pub fn post_setup_rootfs(
     for dir in &[
         "workspace",
         "root",
+        // The sandbox user's home is created by `useradd -m` during provisioning,
+        // but post_setup writes here first (git identity, host_copy), so ensure
+        // it exists even when no host_copy plugin created it.
+        "home/sandbox",
         "dev",
         "proc",
         "sys",

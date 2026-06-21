@@ -17,7 +17,7 @@ pub fn run() -> Result<(), IsolaError> {
         None => {
             // Check for a local .isola/config.yaml before falling back to the wizard
             if let Some((project_dir, local_config)) = LocalConfig::find_from_cwd()? {
-                let name = auto_create_from_local_config(&project_dir, &local_config)?;
+                let name = create_from_local_config(&project_dir, &local_config)?;
                 eprintln!("Entering sandbox '{name}'...");
                 let code = crate::commands::enter::run(&name, None, vec![])?;
                 crate::reset_terminal();
@@ -28,8 +28,11 @@ pub fn run() -> Result<(), IsolaError> {
     }
 }
 
-/// Create a sandbox automatically from a local `.isola/config.yaml`.
-fn auto_create_from_local_config(
+/// Create a sandbox from a local `.isola/config.yaml`, deriving a unique name
+/// from the project directory. This is the shared "app does the rest" path used
+/// both when `isola` finds an existing config and right after the setup wizard
+/// writes one.
+pub(crate) fn create_from_local_config(
     project_dir: &Path,
     config: &LocalConfig,
 ) -> Result<String, IsolaError> {
@@ -79,7 +82,7 @@ fn auto_create_from_local_config(
     let plugin_vars = config.plugin_vars.clone().unwrap_or_default();
     let registry = PluginRegistry::load_for_project(Some(project_dir))?;
 
-    eprintln!("Found .isola/config.yaml, creating sandbox '{name}'...");
+    eprintln!("Creating sandbox '{name}' from .isola/config.yaml...");
 
     crate::commands::create::run_with_envs(
         &name,

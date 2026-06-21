@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use inquire::{Confirm, MultiSelect, Select, Text};
 
 use crate::error::IsolaError;
-use crate::paths;
 use crate::plugin::{PluginLayer, PluginRegistry};
 use crate::sandbox::backend;
 use crate::sandbox::config::{LocalConfig, SandboxShell};
@@ -29,42 +28,14 @@ pub fn run() -> Result<(), IsolaError> {
 
     let registry = PluginRegistry::load()?;
 
-    let dir_name = std::env::current_dir()
-        .ok()
-        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string()))
-        .unwrap_or_else(|| "sandbox".to_string());
-
-    // 1. Sandbox name
-    let name = Text::new("Sandbox name:")
-        .with_default(&dir_name)
-        .with_help_message("Name for the isolated environment")
-        .prompt()
-        .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
-
-    // 2. Workspace confirmation
-    let cwd = std::env::current_dir()
+    // The wizard authors a project-local `.isola/config.yaml`; the app then
+    // creates a sandbox named after — and mounting — the current directory.
+    let project_dir = std::env::current_dir()
         .ok()
         .and_then(|p| std::fs::canonicalize(&p).ok())
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let workspace = Text::new("Workspace directory:")
-        .with_default(&cwd.to_string_lossy())
-        .with_help_message("Host directory to mount inside the sandbox (at /<dirname>)")
-        .prompt()
-        .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
-
-    let workspace_path = PathBuf::from(&workspace);
-    if !workspace_path.exists() {
-        let create = Confirm::new(&format!("'{}' does not exist. Create it?", workspace))
-            .with_default(true)
-            .prompt()
-            .map_err(|e| IsolaError::ConfigError(e.to_string()))?;
-        if create {
-            std::fs::create_dir_all(&workspace_path)?;
-        }
-    }
-
-    // 3. Shell selection (auto-detected from host)
+    // 1. Shell selection (auto-detected from host)
     let detected_shell = SandboxShell::detect_from_host();
     let shell_options = vec!["bash", "fish", "zsh"];
     let default_idx = shell_options
@@ -85,7 +56,7 @@ pub fn run() -> Result<(), IsolaError> {
         _ => SandboxShell::Bash,
     };
 
-    // 4. Display sharing (auto-detected)
+    // 2. Display sharing (auto-detected)
     let has_display = std::env::var("DISPLAY").is_ok() || std::env::var("WAYLAND_DISPLAY").is_ok();
     let share_display = if has_display {
         Confirm::new("Share host display with the sandbox?")
@@ -99,7 +70,7 @@ pub fn run() -> Result<(), IsolaError> {
         false
     };
 
-    // 5. User Setup: personal config from host (auto-detected defaults)
+    // 3. User setup: personal config from host (auto-detected defaults)
     let home = std::env::var("HOME").ok().map(PathBuf::from);
     let user_plugins: Vec<PluginChoice> = registry
         .plugins_for_layer(PluginLayer::User)
@@ -141,7 +112,7 @@ pub fn run() -> Result<(), IsolaError> {
         vec![]
     };
 
-    // 6. Project Tooling: software to install in the sandbox (no defaults)
+    // 4. Project tooling: software to install in the sandbox (no defaults)
     let project_plugins: Vec<PluginChoice> = registry
         .plugins_for_layer(PluginLayer::Project)
         .into_iter()
@@ -178,7 +149,7 @@ pub fn run() -> Result<(), IsolaError> {
         eprintln!("No plugins selected, installing base system only.");
     }
 
-    // 7. Collect plugin-declared prompt answers (e.g. PHP_VERSION for the php plugin)
+    // 5. Collect plugin-declared prompt answers (e.g. PHP_VERSION for the php plugin)
     let mut plugin_vars: BTreeMap<String, String> = BTreeMap::new();
     for env in &env_ids {
         let Some(plugin) = registry.get(env) else {
@@ -208,36 +179,27 @@ pub fn run() -> Result<(), IsolaError> {
         }
     }
 
-    // 8. Create sandbox with selected options
-    crate::commands::create::run_with_envs(
-        &name,
-        Some(workspace_path.clone()),
-        &env_ids,
-        share_display,
-        false,
-        &shell,
-        &registry,
-        &plugin_vars,
-    )?;
+    // 6. Author .isola/config.yaml — the wizard's only job. The app does the rest.
+    let local = LocalConfig {
+        environments: if env_ids.is_empty() {
+            None
+        } else {
+            Some(env_ids.clone())
+        },
+        shell: Some(shell.clone()),
+        share_display: if share_display { Some(true) } else { None },
+        devices: None,
+        plugin_vars: if plugin_vars.is_empty() {
+            None
+        } else {
+            Some(plugin_vars.clone())
+        },
+    };
+    local.save(&project_dir)?;
+    eprintln!("Wrote .isola/config.yaml — commit it to share this setup with your team.");
 
-    // 9. Save .isola/config.yaml for team sharing
-    if !paths::local_config_path(&workspace_path).exists() {
-        let local = LocalConfig {
-            environments: Some(env_ids.clone()),
-            shell: Some(shell.clone()),
-            share_display: if share_display { Some(true) } else { None },
-            devices: None,
-            plugin_vars: if plugin_vars.is_empty() {
-                None
-            } else {
-                Some(plugin_vars.clone())
-            },
-        };
-        local.save(&workspace_path)?;
-        eprintln!("Saved .isola/config.yaml — commit to share sandbox config with your team.");
-    }
-
-    // 9. Enter the sandbox
+    // 7. Hand off to the standard config-driven create + enter path.
+    let name = crate::commands::default::create_from_local_config(&project_dir, &local)?;
     eprintln!("Launching {}...", shell.name());
     let code = crate::commands::enter::run(&name, None, vec![])?;
     crate::reset_terminal();
