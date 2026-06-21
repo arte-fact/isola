@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use crate::error::{IoContext, IsolaError};
 #[cfg(target_os = "linux")]
 use crate::paths;
-use crate::plugin::PluginRegistry;
+use crate::plugin::{Plugin, PluginRegistry};
 use crate::sandbox::config::SandboxShell;
 
 #[cfg(target_os = "linux")]
@@ -275,75 +275,68 @@ chmod 700 /run/user/0 /run/user/1000
 "#,
     );
 
-    // Selected environments (from plugins; shell plugins run here too; config-only plugins skipped)
-    for env in environments {
-        if let Some(plugin) = registry.get(env) {
-            if let Some(ref install_script) = plugin.install_script {
-                script.push('\n');
-                let exports = emit_plugin_exports(plugin, plugin_vars);
-                if !exports.is_empty() {
-                    script.push_str(&exports);
-                }
-                script.push_str(install_script);
+    // Resolve plugins once (warning on unknown environments); every step below
+    // iterates this list instead of repeating the registry lookup.
+    let plugins: Vec<&Plugin> = environments
+        .iter()
+        .filter_map(|env| match registry.get(env) {
+            Some(p) => Some(p),
+            None => {
+                eprintln!("warning: unknown environment '{env}', skipping");
+                None
             }
-        } else {
-            eprintln!("warning: unknown environment '{env}', skipping");
+        })
+        .collect();
+
+    // Run each plugin's install script (shell plugins too; config-only skipped).
+    for plugin in &plugins {
+        if let Some(install_script) = &plugin.install_script {
+            script.push('\n');
+            script.push_str(&emit_plugin_exports(plugin, plugin_vars));
+            script.push_str(install_script);
         }
     }
 
-    // Copy tools to sandbox user (from plugin paths.copy)
-    let mut path_parts = Vec::new();
-    for env in environments {
-        if let Some(plugin) = registry.get(env) {
-            for cp in &plugin.manifest.paths.copy {
-                if let Some(parent) = std::path::Path::new(&cp.to).parent() {
-                    script.push_str(&format!("mkdir -p {}\n", parent.display()));
-                }
-                script.push_str(&format!(
-                    "cp -rp {} {} 2>/dev/null || true\n",
-                    cp.from, cp.to
-                ));
+    // Copy plugin tools into the sandbox home (paths.copy) and gather bin dirs.
+    let mut path_parts: Vec<&str> = Vec::new();
+    for plugin in &plugins {
+        for cp in &plugin.manifest.paths.copy {
+            if let Some(parent) = std::path::Path::new(&cp.to).parent() {
+                script.push_str(&format!("mkdir -p {}\n", parent.display()));
             }
-            for bin in &plugin.manifest.paths.bin {
-                path_parts.push(bin.as_str());
-            }
+            script.push_str(&format!(
+                "cp -rp {} {} 2>/dev/null || true\n",
+                cp.from, cp.to
+            ));
+        }
+        for bin in &plugin.manifest.paths.bin {
+            path_parts.push(bin.as_str());
         }
     }
 
     script.push_str("chown -R 1000:1000 /home/sandbox/\n");
 
-    // Ensure all files directly in plugin bin directories are executable.
-    // Some installers (e.g. Claude Code) target the sandbox user directly and
-    // create files without the execute bit; this fixes it generically.
-    for env in environments {
-        if let Some(plugin) = registry.get(env) {
-            for bin in &plugin.manifest.paths.bin {
-                script.push_str(&format!(
-                    "find {bin} -maxdepth 1 -type f -exec chmod a+x {{}} + 2>/dev/null || true\n"
-                ));
-            }
-        }
+    // Ensure files directly in plugin bin directories are executable. Some
+    // installers (e.g. Claude Code) create files without the execute bit.
+    for bin in plugin_bin_dirs(&plugins) {
+        script.push_str(&format!(
+            "find {bin} -maxdepth 1 -type f -exec chmod a+x {{}} + 2>/dev/null || true\n"
+        ));
     }
 
-    // Build PATH for sandbox user
+    // Sandbox user PATH.
     path_parts.push("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin");
-    let path_line = format!(
+    script.push_str(&format!(
         "echo 'export PATH=\"{}\"' >> /home/sandbox/.bashrc\n",
         path_parts.join(":")
-    );
-    script.push_str(&path_line);
+    ));
 
-    // Root PATH (collect all root-side bin paths from plugins)
+    // Root PATH (rewrite /home/sandbox/* bin dirs to /root/*).
     let mut root_path_parts: Vec<String> = Vec::new();
-    for env in environments {
-        if let Some(plugin) = registry.get(env) {
-            for bin in &plugin.manifest.paths.bin {
-                if let Some(rest) = bin.strip_prefix("/home/sandbox/") {
-                    root_path_parts.push(format!("/root/{rest}"));
-                } else {
-                    root_path_parts.push(bin.clone());
-                }
-            }
+    for bin in plugin_bin_dirs(&plugins) {
+        match bin.strip_prefix("/home/sandbox/") {
+            Some(rest) => root_path_parts.push(format!("/root/{rest}")),
+            None => root_path_parts.push(bin.to_string()),
         }
     }
     root_path_parts.push("$PATH".to_string());
@@ -352,16 +345,24 @@ chmod 700 /run/user/0 /run/user/1000
         root_path_parts.join(":")
     ));
 
-    // Verify. Put plugin `paths.bin` dirs on PATH first so verify commands can
-    // call plugin binaries by name, exactly as enter/exec do at runtime.
-    let mut verify_bins: Vec<String> = Vec::new();
-    for env in environments {
-        if let Some(plugin) = registry.get(env) {
-            for b in &plugin.manifest.paths.bin {
-                if !verify_bins.contains(b) {
-                    verify_bins.push(b.clone());
-                }
-            }
+    emit_verify(&mut script, &plugins);
+    script
+}
+
+/// All `paths.bin` directories declared across the given plugins, in order.
+fn plugin_bin_dirs<'a>(plugins: &'a [&Plugin]) -> impl Iterator<Item = &'a str> {
+    plugins
+        .iter()
+        .flat_map(|p| p.manifest.paths.bin.iter().map(String::as_str))
+}
+
+/// Append the verification block: put plugin bin dirs on PATH so verify commands
+/// resolve by name, then run each plugin's verify command.
+fn emit_verify(script: &mut String, plugins: &[&Plugin]) {
+    let mut verify_bins: Vec<&str> = Vec::new();
+    for bin in plugin_bin_dirs(plugins) {
+        if !verify_bins.contains(&bin) {
+            verify_bins.push(bin);
         }
     }
     script.push_str("\necho \">>> Verifying...\"\n");
@@ -371,18 +372,14 @@ chmod 700 /run/user/0 /run/user/1000
             verify_bins.join(":")
         ));
     }
-    for env in environments {
-        if let Some(plugin) = registry.get(env)
-            && let Some(verify) = &plugin.manifest.provision.verify
-        {
+    for plugin in plugins {
+        if let Some(verify) = &plugin.manifest.provision.verify {
             script.push_str(verify);
             script.push('\n');
         }
     }
     script.push_str("id sandbox\n");
     script.push_str("echo \"=== Provisioning complete ===\"\n");
-
-    script
 }
 
 /// Download and cache rootfs with progress UI.
