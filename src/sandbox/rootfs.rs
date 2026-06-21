@@ -795,6 +795,7 @@ tar czf /var/tmp/{stem}.partial \
     --exclude=./dev/* \
     --exclude=./tmp/* \
     --exclude=./run/* \
+    --exclude=./var/cache/apt/archives/* \
     --exclude=./var/tmp/* \
     --exclude=./workspace/* \
     .
@@ -877,7 +878,7 @@ echo ">>> Capturing layer..."
 mkdir -p /var/tmp
 find / -xdev -newer /tmp/.layer_marker \
     ! -path '/proc/*' ! -path '/sys/*' ! -path '/dev/*' ! -path '/tmp/*' \
-    ! -path '/var/tmp/*' ! -path '/workspace/*' ! -path '/run/*' \
+    ! -path '/var/tmp/*' ! -path '/var/cache/apt/archives/*' ! -path '/workspace/*' ! -path '/run/*' \
     -print0 2>/dev/null | \
     tar czf /var/tmp/.layer_cache.tar.gz --null -T - 2>/dev/null || true
 echo "=== Layer complete ==="
@@ -1539,6 +1540,8 @@ mod tests {
                 "./run/*",
                 // The scratch dir holding the in-progress tarball itself.
                 "./var/tmp/*",
+                // The shared apt archives cache (bind-mounted during provisioning).
+                "./var/cache/apt/archives/*",
                 "./workspace/*",
             ] {
                 assert!(s.contains(excl), "missing exclusion {excl} in:\n{s}");

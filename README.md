@@ -115,6 +115,9 @@ Toolchain plugins share a per-package-manager download cache across all sandboxe
 | `nodejs` | `~/.isola/cache/pkg/npm` | `~/.npm` |
 | `go` | `~/.isola/cache/pkg/{go-mod,go-build}` | `~/go/pkg/mod`, `~/.cache/go-build` |
 | `python-uv` | `~/.isola/cache/pkg/uv` | `~/.cache/uv` |
+| `apt` (base) | `~/.isola/cache/pkg/apt` | `/var/cache/apt/archives` |
+
+The `apt` archives cache is shared during **provisioning**, so installing packages for a new sandbox configuration reuses already-downloaded `.deb`s instead of fetching them again. The toolchain caches above are shared during **`enter`/`exec`**, speeding up your builds.
 
 These are bind-mounted at the tool's default cache location, so they work with no configuration inside the sandbox. The cache is declared per plugin via a `cache:` block in `plugin.yaml`, so your own plugins can opt in:
 

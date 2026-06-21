@@ -179,7 +179,7 @@ impl SandboxBackend for LinuxBackend {
             multi_uid: true,
             capture_output: false,
             devices: vec![],
-            cache_mounts: vec![],
+            cache_mounts: crate::commands::enter::apt_provision_cache(),
         };
 
         enter_sandbox(exec)

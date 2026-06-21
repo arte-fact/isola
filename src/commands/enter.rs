@@ -70,6 +70,19 @@ pub fn collect_cache_mounts(environments: &[String]) -> Vec<(String, String)> {
     mounts
 }
 
+/// Shared apt archives cache mounted during provisioning so downloaded `.deb`s
+/// are reused across sandboxes. apt is part of the base (not a plugin) and runs
+/// as in-namespace root, so this is built in rather than plugin-declared.
+#[cfg(target_os = "linux")]
+pub(crate) fn apt_provision_cache() -> Vec<(String, String)> {
+    let apt = crate::paths::pkg_cache_dir("apt");
+    let _ = std::fs::create_dir_all(&apt);
+    vec![(
+        apt.to_string_lossy().into_owned(),
+        "/var/cache/apt/archives".to_string(),
+    )]
+}
+
 /// Collect device entries from plugins and sandbox config.
 pub fn collect_devices(environments: &[String], config_devices: &[String]) -> Vec<String> {
     let mut devices: Vec<String> = config_devices.to_vec();
@@ -112,7 +125,7 @@ pub fn run_command_captured(
         multi_uid: true,
         capture_output: true,
         devices: vec![],
-        cache_mounts: vec![],
+        cache_mounts: apt_provision_cache(),
     };
 
     crate::sandbox::linux::namespace::spawn_sandbox(exec)
@@ -140,7 +153,7 @@ pub fn run_command(name: &str, command: &str) -> Result<i32, IsolaError> {
         multi_uid: true,
         capture_output: false,
         devices: vec![],
-        cache_mounts: vec![],
+        cache_mounts: apt_provision_cache(),
     };
 
     crate::sandbox::linux::namespace::enter_sandbox(exec)
