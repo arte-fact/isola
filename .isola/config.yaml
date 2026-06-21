@@ -1,0 +1,12 @@
+environments:
+- claude-config
+- fish-config
+- git-config
+- neovim-config
+- ssh-keys
+- claude
+- git
+- neovim
+- rust
+- fish
+shell: fish

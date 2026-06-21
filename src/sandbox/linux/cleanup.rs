@@ -27,7 +27,8 @@ extern "C" fn child_entry(arg: *mut libc::c_void) -> libc::c_int {
     nix::unistd::close(args.sync_write).ok();
     // Wait until the parent has written our UID/GID maps.
     let mut buf = [0u8; 1];
-    nix::unistd::read(args.sync_read, &mut buf).ok();
+    let sync_read = unsafe { std::os::fd::BorrowedFd::borrow_raw(args.sync_read) };
+    nix::unistd::read(sync_read, &mut buf).ok();
     nix::unistd::close(args.sync_read).ok();
 
     // As the namespace creator we hold full capabilities (incl. CAP_DAC_OVERRIDE)

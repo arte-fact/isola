@@ -220,7 +220,8 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
     // Wait for parent to write uid_map/gid_map.
     // The byte value signals: 1 = multi-UID active, 0 = single-UID fallback.
     let mut buf = [0u8; 1];
-    let n = nix::unistd::read(args.sync_pipe_read, &mut buf).unwrap_or(0);
+    let sync_read = unsafe { std::os::fd::BorrowedFd::borrow_raw(args.sync_pipe_read) };
+    let n = nix::unistd::read(sync_read, &mut buf).unwrap_or(0);
     nix::unistd::close(args.sync_pipe_read).ok();
     let got_multi_uid = n == 1 && buf[0] == 1;
 
