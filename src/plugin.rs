@@ -698,12 +698,19 @@ mod tests {
     }
 
     #[test]
-    fn rocm_plugin_has_no_devices() {
+    fn rocm_plugin_declares_amd_devices() {
         let registry = PluginRegistry::load().unwrap();
         let rocm = registry.get("rocm").unwrap();
+        let devs: Vec<&str> = rocm
+            .manifest
+            .paths
+            .device
+            .iter()
+            .map(|d| d.path.as_str())
+            .collect();
         assert!(
-            rocm.manifest.paths.device.is_empty(),
-            "rocm plugin should not declare devices (use gpu instead)"
+            devs.contains(&"/dev/kfd"),
+            "rocm should pass through the AMD KFD device"
         );
     }
 

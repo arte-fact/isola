@@ -5,3 +5,8 @@ layer: project
 provision:
   script: install.sh
   verify: "command -v rocminfo"
+paths:
+  # AMD compute devices (KFD for ROCm/HIP, DRI render nodes).
+  device:
+    - path: /dev/kfd
+    - path: /dev/dri
