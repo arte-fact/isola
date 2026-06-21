@@ -24,6 +24,9 @@ pub enum Commands {
         /// Skip provisioning cache (force fresh provisioning)
         #[arg(long)]
         no_cache: bool,
+        /// Comma-separated plugins to install (default: all project plugins)
+        #[arg(long, value_delimiter = ',')]
+        plugins: Vec<String>,
     },
     /// Enter an existing sandbox
     Enter {

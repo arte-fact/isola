@@ -246,6 +246,13 @@ fn child_main(args: &ChildArgs) -> Result<(), IsolaError> {
             .map_err(|e| IsolaError::NamespaceError(format!("setuid(0) failed: {e}")))?;
     }
 
+    // Refresh the dynamic linker cache while we are root, so the NVIDIA driver
+    // libraries bind-mounted from the host (see mounts.rs) become resolvable and
+    // their soname symlinks (e.g. libcuda.so.1) are created. Cheap and silent.
+    if args.devices.iter().any(|d| d.contains("nvidia")) {
+        let _ = std::process::Command::new("/sbin/ldconfig").status();
+    }
+
     // Drop to non-root user if requested (only possible with multi-UID mapping)
     if let Some(uid) = args.run_as_uid
         && got_multi_uid

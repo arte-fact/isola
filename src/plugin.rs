@@ -156,6 +156,10 @@ const BUNDLED_PLUGINS: &[BundledPlugin] = &[
         manifest_yaml: include_str!("../plugins/gpu/plugin.yaml"),
         install_script: Some(include_str!("../plugins/gpu/install.sh")),
     },
+    BundledPlugin {
+        manifest_yaml: include_str!("../plugins/cuda/plugin.yaml"),
+        install_script: Some(include_str!("../plugins/cuda/install.sh")),
+    },
     // Project-layer: tools
     BundledPlugin {
         manifest_yaml: include_str!("../plugins/neovim/plugin.yaml"),
@@ -594,6 +598,27 @@ mod tests {
         assert!(device_paths.contains(&"/dev/kfd"));
         assert!(device_paths.contains(&"/dev/nvidia0"));
         assert!(device_paths.contains(&"/dev/nvidiactl"));
+    }
+
+    #[test]
+    fn cuda_plugin_declares_nvidia_devices_and_installs_toolkit() {
+        let registry = PluginRegistry::load().unwrap();
+        let cuda = registry.get("cuda").unwrap();
+        let device_paths: Vec<&str> = cuda
+            .manifest
+            .paths
+            .device
+            .iter()
+            .map(|d| d.path.as_str())
+            .collect();
+        assert!(device_paths.contains(&"/dev/nvidiactl"));
+        assert!(device_paths.contains(&"/dev/nvidia-uvm"));
+        assert!(
+            cuda.install_script
+                .as_ref()
+                .unwrap()
+                .contains("nvidia-cuda-toolkit")
+        );
     }
 
     #[test]

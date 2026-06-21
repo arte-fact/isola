@@ -12,15 +12,26 @@ use crate::sandbox::backend;
 use crate::sandbox::config::{SandboxConfig, SandboxShell};
 
 /// Create a sandbox with all project-layer plugins plus auto-detected user-layer plugins (CLI shorthand).
-pub fn run(name: &str, workspace: Option<PathBuf>, no_cache: bool) -> Result<(), IsolaError> {
+/// If `plugins` is non-empty, those plugins are installed instead of all project-layer plugins.
+pub fn run(
+    name: &str,
+    workspace: Option<PathBuf>,
+    no_cache: bool,
+    plugins: Vec<String>,
+) -> Result<(), IsolaError> {
     let registry = PluginRegistry::load()?;
     let home = std::env::var("HOME").ok().map(PathBuf::from);
 
-    let mut envs: Vec<String> = registry
-        .plugins_for_layer(PluginLayer::Project)
-        .into_iter()
-        .map(|p| p.manifest.name.clone())
-        .collect();
+    let mut envs: Vec<String> = if plugins.is_empty() {
+        registry
+            .plugins_for_layer(PluginLayer::Project)
+            .into_iter()
+            .map(|p| p.manifest.name.clone())
+            .collect()
+    } else {
+        registry.validate_environments(&plugins)?;
+        plugins
+    };
 
     // Auto-add user-layer plugins whose host path is detected (e.g. claude-config, ssh-keys)
     for p in registry.plugins_for_layer(PluginLayer::User) {

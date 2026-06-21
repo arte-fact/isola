@@ -36,7 +36,8 @@ fn main() {
             name,
             workspace,
             no_cache,
-        }) => commands::create::run(&name, workspace, no_cache),
+            plugins,
+        }) => commands::create::run(&name, workspace, no_cache, plugins),
         Some(Commands::Enter {
             name,
             workspace,

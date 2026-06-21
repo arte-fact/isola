@@ -148,6 +148,15 @@ pub fn setup_mounts(
         )?;
     }
 
+    // 7c. When NVIDIA devices are passed through, bind-mount the host's
+    // userspace driver libraries (libcuda, libnvidia-*, ...) and tools so CUDA
+    // workloads can run. They must match the host kernel module exactly, hence
+    // bind-mounting from the host rather than installing a package. `ldconfig`
+    // is run inside the sandbox (see namespace.rs) so the loader picks them up.
+    if devices.iter().any(|d| d.contains("nvidia")) {
+        setup_nvidia_libs(rootfs);
+    }
+
     // 8. Create /dev symlinks
     std::os::unix::fs::symlink("/proc/self/fd", dev_path.join("fd"))?;
     std::os::unix::fs::symlink("/proc/self/fd/0", dev_path.join("stdin"))?;
@@ -314,4 +323,76 @@ pub fn setup_mounts(
     }
 
     Ok(())
+}
+
+/// Bind-mount the host's NVIDIA userspace driver libraries and management
+/// binaries into the sandbox. Triggered when NVIDIA device nodes are passed
+/// through. The driver libraries must match the running host kernel module
+/// exactly, so they are bind-mounted straight from the host (the CUDA *toolkit*
+/// is installed by the `cuda` plugin; the *driver* is not). Only the real
+/// versioned files are mounted — `ldconfig` (run later, inside the sandbox)
+/// recreates the soname symlinks and refreshes the loader cache.
+///
+/// Best-effort: anything missing on the host is skipped. Runs before
+/// `pivot_root`, while the host filesystem is still reachable.
+fn setup_nvidia_libs(rootfs: &Path) {
+    let host_lib_dir = Path::new("/usr/lib/x86_64-linux-gnu");
+    let sandbox_lib_dir = rootfs.join("usr/lib/x86_64-linux-gnu");
+    let _ = std::fs::create_dir_all(&sandbox_lib_dir);
+    if let Ok(entries) = std::fs::read_dir(host_lib_dir) {
+        for entry in entries.flatten() {
+            let fname = entry.file_name();
+            let fname = fname.to_string_lossy();
+            let is_driver = (fname.starts_with("libnvidia-")
+                || fname.starts_with("libcuda.so")
+                || fname.starts_with("libnvcuvid.so"))
+                && fname.contains(".so");
+            if !is_driver {
+                continue;
+            }
+            // Skip symlinks; ldconfig regenerates them from the real files.
+            match std::fs::symlink_metadata(entry.path()) {
+                Ok(m) if m.file_type().is_symlink() => continue,
+                Ok(_) => {}
+                Err(_) => continue,
+            }
+            let target = sandbox_lib_dir.join(fname.as_ref());
+            if std::fs::File::create(&target).is_err() {
+                continue;
+            }
+            let _ = do_mount(
+                &fname,
+                Some(&entry.path().to_string_lossy()),
+                &target,
+                None,
+                MsFlags::MS_BIND,
+                None,
+            );
+        }
+    }
+
+    let sandbox_bin = rootfs.join("usr/bin");
+    let _ = std::fs::create_dir_all(&sandbox_bin);
+    for bin in &[
+        "nvidia-smi",
+        "nvidia-debugdump",
+        "nvidia-cuda-mps-control",
+        "nvidia-persistenced",
+    ] {
+        let host = Path::new("/usr/bin").join(bin);
+        if !host.exists() {
+            continue;
+        }
+        let target = sandbox_bin.join(bin);
+        if std::fs::File::create(&target).is_ok() {
+            let _ = do_mount(
+                bin,
+                Some(&host.to_string_lossy()),
+                &target,
+                None,
+                MsFlags::MS_BIND,
+                None,
+            );
+        }
+    }
 }
