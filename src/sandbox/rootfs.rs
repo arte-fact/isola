@@ -597,12 +597,16 @@ pub fn post_setup_rootfs(
         }
     }
 
-    // Inherit host git identity (best-effort)
+    // Inherit host git identity (best-effort). The user dirs may not exist yet on the
+    // fresh-extract path (provisioning creates them later); write must not depend on order.
     if let Some(gitconfig) = build_host_gitconfig() {
-        let sandbox_gc = rootfs.join("home/sandbox/.gitconfig");
-        std::fs::write(&sandbox_gc, &gitconfig).io_ctx("write", &sandbox_gc)?;
-        let root_gc = rootfs.join("root/.gitconfig");
-        std::fs::write(&root_gc, &gitconfig).io_ctx("write", &root_gc)?;
+        for rel in ["home/sandbox/.gitconfig", "root/.gitconfig"] {
+            let path = rootfs.join(rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).io_ctx("create dir", parent)?;
+            }
+            std::fs::write(&path, &gitconfig).io_ctx("write", &path)?;
+        }
     }
 
     Ok(())
