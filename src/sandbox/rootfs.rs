@@ -439,6 +439,27 @@ pub fn extract_rootfs(tarball: &Path, target: &Path) -> Result<(), IsolaError> {
         IsolaError::ExtractionFailed(format!("{} (tarball: {})", e, tarball.display()))
     })?;
 
+    ensure_usr_merge_links(target)?;
+    Ok(())
+}
+
+/// Re-assert ubuntu-base's usr-merge symlinks (`/bin /lib /lib64 /sbin -> usr/*`) after an
+/// extraction. Layered cache tarballs can lose top-level symlink entries (tar refuses to
+/// write through a symlink path component, and a layer carrying real `lib/...` paths ends
+/// up clobbering the link), which leaves the dynamic loader unresolvable — every execve in
+/// the sandbox then fails ENOENT. The links are an invariant of the rootfs, so restore any
+/// that are missing whenever the merged `usr/<dir>` exists.
+fn ensure_usr_merge_links(rootfs: &Path) -> Result<(), IsolaError> {
+    for dir in ["bin", "lib", "lib64", "sbin"] {
+        let link = rootfs.join(dir);
+        if std::fs::symlink_metadata(&link).is_ok() {
+            continue;
+        }
+        if rootfs.join("usr").join(dir).is_dir() {
+            std::os::unix::fs::symlink(format!("usr/{dir}"), &link)
+                .io_ctx("restore usr-merge symlink", &link)?;
+        }
+    }
     Ok(())
 }
 
@@ -1438,5 +1459,42 @@ mod tests {
             h.finish_hex(),
             "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
         );
+    }
+}
+
+#[cfg(test)]
+mod usr_merge_tests {
+    use super::*;
+
+    #[test]
+    fn extraction_restores_lost_usr_merge_links() {
+        // A layer tarball that carries real `lib/...` paths but no top-level symlink
+        // entries (the observed cache corruption): after extraction the usr-merge links
+        // must exist again so the dynamic loader resolves.
+        let dir = std::env::temp_dir().join(format!("isola-usrmerge-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let src = dir.join("src");
+        std::fs::create_dir_all(src.join("usr/lib64")).unwrap();
+        std::fs::create_dir_all(src.join("usr/bin")).unwrap();
+        std::fs::write(src.join("usr/lib64/ld-linux-x86-64.so.2"), "x").unwrap();
+        let tar_path = dir.join("layer.tar.gz");
+        let out = std::process::Command::new("tar")
+            .args(["czf"])
+            .arg(&tar_path)
+            .args(["-C"])
+            .arg(&src)
+            .arg(".")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let target = dir.join("rootfs");
+        extract_rootfs(&tar_path, &target).unwrap();
+        for link in ["bin", "lib64"] {
+            let meta = std::fs::symlink_metadata(target.join(link)).unwrap();
+            assert!(meta.file_type().is_symlink(), "{link} must be a symlink");
+        }
+        // No usr/sbin in this rootfs → no sbin link fabricated.
+        assert!(std::fs::symlink_metadata(target.join("sbin")).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
