@@ -641,8 +641,10 @@ pub fn has_cached_provision(environments: &[String], shell: &str) -> Option<Path
 /// move them out to the host cache directory.
 const PROVISION_CACHE_FILE: &str = ".provision_cache.tar.gz";
 
-/// Build a script that tars the entire rootfs into `/tmp/{out}` from inside
-/// the sandbox.
+/// Build a script that tars the entire rootfs into `/var/tmp/{out}` from inside
+/// the sandbox — NOT `/tmp`, which the namespace overmounts with a tmpfs that
+/// evaporates on exit (the tarball must land in the real rootfs for the host
+/// to move it into the cache).
 ///
 /// Provisioning leaves files owned by the in-namespace sandbox user (UID
 /// 1000), which the host sees as an unmapped subuid. A host-side `tar` over
@@ -655,25 +657,26 @@ fn build_full_rootfs_cache_script(out: &str) -> String {
         r#"#!/bin/bash
 set -eo pipefail
 echo ">>> Capturing rootfs cache..."
-rm -f /tmp/{out} /tmp/{stem}.partial
+rm -f /var/tmp/{out} /var/tmp/{stem}.partial
 cd /
-tar czf /tmp/{stem}.partial \
+tar czf /var/tmp/{stem}.partial \
     --exclude=./proc/* \
     --exclude=./sys/* \
     --exclude=./dev/* \
     --exclude=./tmp/* \
     --exclude=./run/* \
+    --exclude=./var/tmp/* \
     --exclude=./workspace/* \
     .
-mv /tmp/{stem}.partial /tmp/{out}
-[ -s /tmp/{out} ] || {{ echo "error: cache tarball is empty" >&2; exit 1; }}
+mv /var/tmp/{stem}.partial /var/tmp/{out}
+[ -s /var/tmp/{out} ] || {{ echo "error: cache tarball is empty" >&2; exit 1; }}
 echo "=== Rootfs cache complete ==="
 "#
     )
 }
 
 /// Script that creates the full-provision cache tarball at
-/// `/tmp/.provision_cache.tar.gz` inside the sandbox.
+/// `/var/tmp/.provision_cache.tar.gz` inside the sandbox.
 pub fn build_provision_cache_script() -> String {
     build_full_rootfs_cache_script(PROVISION_CACHE_FILE)
 }
@@ -701,7 +704,7 @@ pub fn cache_provisioned_rootfs(
     shell: &str,
 ) -> Result<(), IsolaError> {
     let rootfs_path = paths::rootfs_dir(name);
-    let src = rootfs_path.join("tmp").join(PROVISION_CACHE_FILE);
+    let src = rootfs_path.join("var/tmp").join(PROVISION_CACHE_FILE);
     let dest = paths::provision_cache_path(environments, shell);
     move_cache_tarball(&src, &dest)
 }
@@ -972,7 +975,11 @@ mod tests {
         // Atomic: write to .partial, then mv into place — never leave a
         // truncated .tar.gz that future runs would treat as a valid cache.
         assert!(s.contains(".provision_cache.partial"));
-        assert!(s.contains("mv /tmp/.provision_cache.partial /tmp/.provision_cache.tar.gz"));
+        assert!(
+            s.contains("mv /var/tmp/.provision_cache.partial /var/tmp/.provision_cache.tar.gz")
+        );
+        // /tmp is namespace-tmpfs (evaporates); the tarball must live in the real rootfs.
+        assert!(!s.contains("czf /tmp/"));
         // Fail-fast on any error so a partial tarball doesn't get renamed.
         assert!(s.contains("set -eo pipefail"));
     }
@@ -989,6 +996,7 @@ mod tests {
                 "./dev/*",
                 "./tmp/*",
                 "./run/*",
+                "./var/tmp/*",
                 "./workspace/*",
             ] {
                 assert!(s.contains(excl), "missing exclusion {excl} in:\n{s}");
