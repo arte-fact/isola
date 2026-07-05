@@ -13,6 +13,12 @@ use cli::{Cli, Commands};
 /// Interactive shells may leave the terminal in raw mode,
 /// alternate screen, or with modified attributes.
 pub fn reset_terminal() {
+    // Only a real terminal needs (or should see) the reset: when stderr is piped —
+    // `isola exec` under a supervisor capturing output — control codes would pollute
+    // the captured stream.
+    if !std::io::IsTerminal::is_terminal(&std::io::stderr()) {
+        return;
+    }
     // \x1b[?1049l  — leave alternate screen buffer
     // \x1b[?25h    — show cursor
     // \x1b[0m      — reset all attributes (colors, bold, etc.)
@@ -35,7 +41,8 @@ fn main() {
             name,
             workspace,
             no_cache,
-        }) => commands::create::run(&name, workspace, no_cache),
+            env,
+        }) => commands::create::run(&name, workspace, no_cache, &env),
         Some(Commands::Enter {
             name,
             workspace,

@@ -9,8 +9,33 @@ use crate::sandbox::config::{SandboxConfig, SandboxShell};
 use crate::sandbox::rootfs;
 
 /// Create a sandbox with all project-layer plugins plus auto-detected user-layer plugins (CLI shorthand).
-pub fn run(name: &str, workspace: Option<PathBuf>, no_cache: bool) -> Result<(), IsolaError> {
+pub fn run(
+    name: &str,
+    workspace: Option<PathBuf>,
+    no_cache: bool,
+    explicit_envs: &[String],
+) -> Result<(), IsolaError> {
     let registry = PluginRegistry::load()?;
+
+    if !explicit_envs.is_empty() {
+        for env in explicit_envs {
+            if registry.get(env).is_none() {
+                return Err(IsolaError::ConfigError(format!(
+                    "unknown environment {env:?} — see plugins with `isola list`"
+                )));
+            }
+        }
+        return run_with_envs(
+            name,
+            workspace,
+            explicit_envs,
+            false,
+            no_cache,
+            &SandboxShell::default(),
+            &registry,
+        );
+    }
+
     let home = std::env::var("HOME").ok().map(PathBuf::from);
 
     let mut envs: Vec<String> = registry

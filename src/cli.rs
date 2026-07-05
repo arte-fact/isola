@@ -24,6 +24,10 @@ pub enum Commands {
         /// Skip provisioning cache (force fresh provisioning)
         #[arg(long)]
         no_cache: bool,
+        /// Provision exactly these environments (repeatable). Default: all project-layer
+        /// plugins plus auto-detected user configs — use this for minimal/agent sandboxes.
+        #[arg(long = "env")]
+        env: Vec<String>,
     },
     /// Enter an existing sandbox
     Enter {
