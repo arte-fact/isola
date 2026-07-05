@@ -5,6 +5,10 @@ use crate::progress::{self, CreationProgress};
 use crate::sandbox::config::SandboxConfig;
 use crate::sandbox::rootfs;
 
+/// Re-run provisioning inside an existing sandbox (same env set, rootfs kept). The full
+/// provision script is idempotent per plugin; the snapshot cache is left untouched — a
+/// reprovisioned rootfs has drifted from create-time state and must not overwrite the
+/// clean snapshot other creates extract.
 pub fn run(name: &str) -> Result<(), IsolaError> {
     let rootfs_path = paths::rootfs_dir(name);
     if !rootfs_path.exists() {
@@ -21,72 +25,23 @@ pub fn run(name: &str) -> Result<(), IsolaError> {
     rootfs::post_setup_rootfs(&rootfs_path, name, environments, &registry)?;
     progress.finish_step("Configured rootfs");
 
-    // Check which layers need rebuilding
-    let layer_status = rootfs::check_layer_cache(environments, &config.shell, &registry);
-    let mut built_layers = Vec::new();
-    let mut cached_layers = Vec::new();
-
-    // Extract cached layers first
-    if !layer_status.cached.is_empty() {
-        progress.start_step("Extracting cached layers...");
-        for (layer_name, layer_path) in &layer_status.cached {
-            rootfs::extract_rootfs(layer_path, &rootfs_path)?;
-            cached_layers.push(layer_name.clone());
-        }
-        progress.finish_step("Extracted cached layers");
+    progress.start_provision();
+    let script = rootfs::build_provision_script(environments, &config.shell, &registry);
+    let child = crate::commands::enter::run_command_captured(name, &script)?;
+    let (exit_code, last_lines) = progress::monitor_provisioning(child, &progress, &script)?;
+    if exit_code != 0 {
+        progress.finish_error(exit_code, &last_lines);
+        return Err(IsolaError::ProvisionFailed(exit_code));
     }
 
-    // Build uncached layers
-    for layer_name in &layer_status.uncached {
-        let script = if layer_name == "base" {
-            rootfs::build_base_layer_script(&config.shell)
-        } else {
-            rootfs::build_env_layer_script(layer_name, &registry).ok_or_else(|| {
-                IsolaError::PluginError(format!("no plugin found for '{layer_name}'"))
-            })?
-        };
-
-        progress.start_step(&format!("Provisioning {layer_name}..."));
-        let child = crate::commands::enter::run_command_captured(name, &script)?;
-        let (exit_code, last_lines) = progress::monitor_provisioning(child, &progress, &script)?;
-        if exit_code != 0 {
-            progress.finish_error(exit_code, &last_lines);
-            return Err(IsolaError::ProvisionFailed(exit_code));
-        }
-
-        // Cache the layer. For the base layer the tarball is produced inside
-        // the sandbox (so unmapped subuids on the host don't cause EACCES);
-        // env layers tar themselves as part of their provision script.
-        if layer_name == "base" {
-            let res = (|| -> Result<(), IsolaError> {
-                let cache_script = rootfs::build_base_cache_script();
-                let child = crate::commands::enter::run_command_captured(name, &cache_script)?;
-                let (exit_code, _) =
-                    progress::monitor_provisioning(child, &progress, &cache_script)?;
-                if exit_code != 0 {
-                    return Err(IsolaError::ProvisionFailed(exit_code));
-                }
-                rootfs::cache_base_layer(name, &config.shell).map(|_| ())
-            })();
-            if let Err(e) = res {
-                eprintln!("warning: failed to cache base layer: {e}");
-            }
-        } else if let Err(e) = rootfs::cache_env_layer(name, layer_name, &config.shell, &registry) {
-            eprintln!("warning: failed to cache {layer_name} layer: {e}");
-        }
-
-        built_layers.push(layer_name.clone());
-    }
-
-    // Fixup PATH + ownership
     progress.start_step("Fixing ownership...");
-    let fixup = rootfs::build_layered_fixup_script(environments, &registry);
+    let fixup = rootfs::build_fixup_script();
     let exit_code = crate::commands::enter::run_command(name, &fixup)?;
     if exit_code != 0 {
         return Err(IsolaError::ProvisionFailed(exit_code));
     }
     progress.finish_step("Ownership fixed");
 
-    progress.finish_layered(environments, &cached_layers, &built_layers);
+    progress.finish_success(environments);
     Ok(())
 }

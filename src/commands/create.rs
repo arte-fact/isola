@@ -94,106 +94,34 @@ pub fn run_with_envs(
     let rootfs_path = paths::rootfs_dir(name);
     std::fs::create_dir_all(&rootfs_path).io_ctx("create sandbox rootfs dir", &rootfs_path)?;
 
-    // Try layered cache first, then legacy monolithic cache, then full provision
-    let layer_status = if no_cache {
-        None
-    } else {
-        Some(rootfs::check_layer_cache(environments, shell, registry))
-    };
-
-    let used_layered_cache = if let Some(ref status) = layer_status
-        && status.all_cached()
+    // One cache concept: the provisioned-rootfs snapshot, keyed by (envs, shell). A hit
+    // extracts in seconds; a sanity-check failure discards the bad tarball and falls
+    // through to full provisioning — a stale or torn cache must never fail a create.
+    let mut used_cache = false;
+    if !no_cache && let Some(cache_path) = rootfs::has_cached_provision(environments, shell.name())
     {
-        // Fast path: all layers cached
-        progress.start_step("Extracting cached layers...");
-        for (_, layer_path) in &status.cached {
-            rootfs::extract_rootfs(layer_path, &rootfs_path)?;
-        }
-        rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
-        progress.finish_step("Extracted cached layers");
-        true
-    } else if !no_cache
-        && let Some(cache_path) = rootfs::has_cached_provision(environments, shell.name())
-    {
-        // Legacy fallback: monolithic cache exists
         progress.start_step("Extracting cached rootfs...");
-        rootfs::extract_rootfs(&cache_path, &rootfs_path)?;
-        rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
-        progress.finish_step("Extracted cached rootfs");
-        false
-    } else if let Some(ref status) = layer_status
-        && !status.cached.is_empty()
-    {
-        // Partial layered cache: extract cached layers, build missing ones
-        progress.start_step("Extracting cached layers...");
-        for (_, layer_path) in &status.cached {
-            rootfs::extract_rootfs(layer_path, &rootfs_path)?;
-        }
-        // Must check before the uncached loop — run_command_captured execs
-        // /bin/bash, which surfaces a corrupt cache as a cryptic ENOENT.
-        rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
-        progress.finish_step("Extracted cached layers");
-
-        // Build each uncached layer
-        for layer_name in &status.uncached {
-            let script = if layer_name == "base" {
-                rootfs::build_base_layer_script(shell)
-            } else {
-                rootfs::build_env_layer_script(layer_name, registry).ok_or_else(|| {
-                    IsolaError::PluginError(format!("no plugin found for '{layer_name}'"))
-                })?
-            };
-
-            progress.start_step(&format!("Provisioning {layer_name}..."));
-
-            // Save config early so run_command_captured can find the sandbox
-            save_config(name, &workspace, environments, share_display, shell)?;
-
-            let child = crate::commands::enter::run_command_captured(name, &script)?;
-            let (exit_code, last_lines) =
-                progress::monitor_provisioning(child, &progress, &script)?;
-            if exit_code != 0 {
-                progress.finish_error(exit_code, &last_lines);
-                return Err(IsolaError::ProvisionFailed(exit_code));
+        let healthy = rootfs::extract_rootfs(&cache_path, &rootfs_path)
+            .and_then(|()| rootfs::sanity_check_provisioned(&rootfs_path));
+        match healthy {
+            Ok(()) => {
+                progress.finish_step("Extracted cached rootfs");
+                used_cache = true;
             }
-
-            // Cache the layer
-            if layer_name == "base" {
-                progress.start_step("Caching base layer...");
-                let res = run_cache_script_and_move(
-                    name,
-                    &rootfs::build_base_cache_script(),
-                    &progress,
-                    || rootfs::cache_base_layer(name, shell).map(|_| ()),
-                );
-                match res {
-                    Ok(()) => progress.finish_step("Cached base layer"),
-                    Err(e) => progress.finish_step(&format!("Cache skipped: {e}")),
-                }
-            } else {
-                match rootfs::cache_env_layer(name, layer_name, shell, registry) {
-                    Ok(Some(_)) => {
-                        progress.finish_step(&format!("Cached {layer_name} layer"));
-                    }
-                    Ok(None) => {
-                        progress.finish_step(&format!("Provisioned {layer_name} (no cache file)"));
-                    }
-                    Err(e) => {
-                        progress.finish_step(&format!("Cache skipped for {layer_name}: {e}"));
-                    }
-                }
+            Err(err) => {
+                progress.finish_step(&format!("Cache discarded: {err}"));
+                let _ = std::fs::remove_file(&cache_path);
+                let _ = std::fs::remove_dir_all(&rootfs_path);
             }
         }
-        true
-    } else {
-        // No cache at all: download base rootfs and do full provision
+    }
+    if !used_cache {
         let tarball = rootfs::ensure_rootfs_cached_with_progress(&progress)?;
         progress.start_step("Extracting rootfs...");
         rootfs::extract_rootfs(&tarball, &rootfs_path)?;
         rootfs::ensure_rootfs_has_bash(&rootfs_path)?;
         progress.finish_step("Extracted rootfs");
-        false
-    };
+    }
 
     // Configure rootfs (sandbox-specific: hostname, git config, shell config, etc.)
     progress.start_step("Configuring rootfs...");
@@ -203,24 +131,8 @@ pub fn run_with_envs(
     // Save config (may already exist from partial layer build, save again to ensure latest)
     save_config(name, &workspace, environments, share_display, shell)?;
 
-    if used_layered_cache {
-        // Layered path: fix ownership + set up PATH
-        progress.start_step("Fixing ownership...");
-        let script = rootfs::build_layered_fixup_script(environments, registry);
-        let exit_code = crate::commands::enter::run_command(name, &script)?;
-        if exit_code != 0 {
-            return Err(IsolaError::ProvisionFailed(exit_code));
-        }
-        progress.finish_step("Ownership fixed");
-
-        if let Some(ref status) = layer_status {
-            let cached_names: Vec<String> = status.cached.iter().map(|(n, _)| n.clone()).collect();
-            progress.finish_layered(environments, &cached_names, &status.uncached);
-        } else {
-            progress.finish_cached(environments);
-        }
-    } else if !no_cache && rootfs::has_cached_provision(environments, shell.name()).is_some() {
-        // Legacy monolithic cache was used
+    if used_cache {
+        // Cached rootfs: ownership fixup only (subuid mapping differs per host user).
         progress.start_step("Fixing ownership...");
         let script = rootfs::build_fixup_script();
         let exit_code = crate::commands::enter::run_command(name, &script)?;
@@ -230,7 +142,7 @@ pub fn run_with_envs(
         progress.finish_step("Ownership fixed");
         progress.finish_cached(environments);
     } else {
-        // Full provisioning (no cache hit at all)
+        // Full provisioning, then capture the snapshot for the next exact-config create.
         progress.start_provision();
         let script = rootfs::build_provision_script(environments, shell, registry);
         let child = crate::commands::enter::run_command_captured(name, &script)?;
@@ -241,13 +153,8 @@ pub fn run_with_envs(
             return Err(IsolaError::ProvisionFailed(exit_code));
         }
 
-        // Cache the whole provisioned rootfs for an exact-config rerun. The
-        // tarball is produced *inside* the sandbox so tar can read files owned
-        // by the mapped sandbox UID (an unmapped subuid from the host's POV).
-        // We deliberately do NOT call cache_base_layer here: the post-provision
-        // rootfs has env layers mixed in, so captured as "base" it would
-        // poison future sandboxes that match the base-layer hash but expect
-        // a pure base. Layered caches are built only via the layered path.
+        // The tarball is produced *inside* the sandbox so tar can read files owned by the
+        // mapped sandbox UID (an unmapped subuid from the host's POV).
         progress.start_step("Caching for future use...");
         let cache_result = run_cache_script_and_move(
             name,

@@ -31,22 +31,6 @@ pub fn local_config_path(project_dir: &Path) -> PathBuf {
     project_dir.join(".isola").join("config.yaml")
 }
 
-pub fn layers_cache_dir() -> PathBuf {
-    cache_dir().join("layers")
-}
-
-/// Path for a single layer cache file.
-/// - Base layer: `layers/base-{hash}-{shell}.tar.gz`
-/// - Env layer: `layers/env-{name}-{hash}.tar.gz`
-pub fn layer_cache_path(layer_name: &str, version_hash: &str, shell: &str) -> PathBuf {
-    let filename = if layer_name == "base" {
-        format!("base-{version_hash}-{shell}.tar.gz")
-    } else {
-        format!("env-{layer_name}-{version_hash}.tar.gz")
-    };
-    layers_cache_dir().join(filename)
-}
-
 /// Legacy: cache path for a monolithic provisioned rootfs tarball.
 pub fn provision_cache_path(environments: &[String], shell: &str) -> PathBuf {
     let mut parts: Vec<String> = environments.to_vec();
@@ -109,29 +93,6 @@ mod tests {
     #[test]
     fn cache_dir_is_under_isola_home() {
         assert_eq!(cache_dir(), isola_home().join("cache"));
-    }
-
-    #[test]
-    fn layers_cache_dir_is_under_cache() {
-        assert_eq!(layers_cache_dir(), cache_dir().join("layers"));
-    }
-
-    #[test]
-    fn layer_cache_path_base() {
-        let path = layer_cache_path("base", "abc123", "bash");
-        assert!(path.ends_with("layers/base-abc123-bash.tar.gz"));
-    }
-
-    #[test]
-    fn layer_cache_path_env() {
-        let path = layer_cache_path("rust", "def456", "bash");
-        assert!(path.ends_with("layers/env-rust-def456.tar.gz"));
-    }
-
-    #[test]
-    fn layer_cache_path_neovim() {
-        let path = layer_cache_path("neovim", "789abc", "bash");
-        assert!(path.ends_with("layers/env-neovim-789abc.tar.gz"));
     }
 
     #[test]
