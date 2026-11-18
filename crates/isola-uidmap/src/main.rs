@@ -11,6 +11,10 @@
 //!   isola-uidmap uid  <pid> <inside> <outside> <count> [<inside> <outside> <count> ...]
 //!   isola-uidmap gid  <pid> <inside> <outside> <count> [<inside> <outside> <count> ...]
 
+use std::fs::File;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::MetadataExt;
+use std::path::Path;
 use std::process;
 
 // Minimal FFI — avoids pulling in libc or nix crate dependencies.
@@ -61,6 +65,15 @@ fn run() -> Result<(), String> {
     let pid: i32 = pid_str
         .parse()
         .map_err(|_| format!("invalid pid: {pid_str}"))?;
+    if pid <= 0 {
+        return Err(format!("invalid pid: {pid_str}"));
+    }
+
+    // The target must be a process of the calling user. Keep its /proc
+    // directory open and write through that handle, so the check and the
+    // privileged writes are guaranteed to refer to the same process.
+    let proc_dir = open_owned_proc_dir(Path::new(&format!("/proc/{pid}")), ruid)?;
+    let proc_fd = proc_dir.as_raw_fd();
 
     // Parse mappings from remaining args: groups of (inside, outside, count)
     let mappings: Vec<(u32, u32, u32)> = rest[1..]
@@ -126,7 +139,7 @@ fn run() -> Result<(), String> {
     // All validations passed — write the mappings.
     if map_type == "uid" {
         // Must deny setgroups before writing gid_map
-        let setgroups_path = format!("/proc/{pid}/setgroups");
+        let setgroups_path = format!("/proc/self/fd/{proc_fd}/setgroups");
         std::fs::write(&setgroups_path, "deny\n")
             .map_err(|e| format!("write {setgroups_path}: {e}"))?;
     }
@@ -138,12 +151,37 @@ fn run() -> Result<(), String> {
     }
 
     let map_path = format!(
-        "/proc/{pid}/{}_map",
+        "/proc/self/fd/{proc_fd}/{}_map",
         if map_type == "uid" { "uid" } else { "gid" }
     );
     std::fs::write(&map_path, &map_data).map_err(|e| format!("write {map_path}: {e}"))?;
 
     Ok(())
+}
+
+/// Open a process's `/proc/<pid>` directory, refusing it unless the process
+/// belongs to `expected_uid` (the caller's real UID).
+///
+/// Without this check any user could ask the setuid helper to write the ID
+/// maps of someone else's process. Ownership is read from the opened handle
+/// (fstat), not from the path, so the PID cannot be swapped in between.
+fn open_owned_proc_dir(proc_dir: &Path, expected_uid: u32) -> Result<File, String> {
+    let dir = File::open(proc_dir).map_err(|e| format!("open {}: {e}", proc_dir.display()))?;
+    let meta = dir
+        .metadata()
+        .map_err(|e| format!("stat {}: {e}", proc_dir.display()))?;
+    if !meta.is_dir() {
+        return Err(format!("{} is not a directory", proc_dir.display()));
+    }
+    if meta.uid() != expected_uid {
+        return Err(format!(
+            "{} belongs to UID {}, not to the calling user (UID {expected_uid}); \
+             refusing to write its ID maps",
+            proc_dir.display(),
+            meta.uid()
+        ));
+    }
+    Ok(dir)
 }
 
 /// Resolve the calling user's name from their **real UID**.
@@ -291,6 +329,38 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
+    }
+
+    #[test]
+    fn own_process_is_accepted() {
+        let uid = unsafe { getuid() };
+        let dir = open_owned_proc_dir(Path::new("/proc/self"), uid).unwrap();
+        assert!(dir.metadata().unwrap().is_dir());
+    }
+
+    #[test]
+    fn process_of_another_user_is_refused() {
+        let uid = unsafe { getuid() };
+        // Our own process, checked against a UID that is not ours.
+        let err = open_owned_proc_dir(Path::new("/proc/self"), uid.wrapping_add(1)).unwrap_err();
+        assert!(err.contains("not to the calling user"), "{err}");
+
+        // PID 1 belongs to root: refused for any unprivileged caller.
+        if uid != 0 {
+            let err = open_owned_proc_dir(Path::new("/proc/1"), uid).unwrap_err();
+            assert!(err.contains("belongs to UID 0"), "{err}");
+        }
+    }
+
+    #[test]
+    fn missing_process_and_non_directory_are_refused() {
+        let uid = unsafe { getuid() };
+        let err = open_owned_proc_dir(Path::new("/proc/0"), uid).unwrap_err();
+        assert!(err.starts_with("open /proc/0"), "{err}");
+
+        let f = tempfile::NamedTempFile::new().unwrap();
+        let err = open_owned_proc_dir(f.path(), uid).unwrap_err();
+        assert!(err.contains("is not a directory"), "{err}");
     }
 
     #[test]
