@@ -101,40 +101,14 @@ fn run() -> Result<(), String> {
     };
     let (sub_start, sub_count) = parse_subordinate_range(sub_path, &username, ruid)?;
 
-    // Validate: every mapping must be within the user's subordinate range.
-    // The exception: the user's own host UID/GID may be mapped directly.
     let allowed_self = if map_type == "uid" { ruid } else { rgid };
-    for &(inside, outside, count) in &mappings {
-        if count == 0 {
-            continue;
-        }
-        let max_outside = outside.saturating_add(count).saturating_sub(1);
-
-        if outside == allowed_self && count == 1 {
-            // Mapping the user's own ID is always allowed.
-            continue;
-        }
-
-        if outside < sub_start
-            || max_outside > sub_start.saturating_add(sub_count).saturating_sub(1)
-        {
-            return Err(format!(
-                "mapping {inside} {outside} {count} is outside the allowed subordinate range \
-                 ({sub_start}-{}) for user '{username}'",
-                sub_start.saturating_add(sub_count).saturating_sub(1),
-            ));
-        }
-
-        // Refuse to map UID 0 to the user's own host UID on the inside.
-        // Mapping inside-0 to sub_start is fine; mapping inside-0 to the user's own
-        // host UID would give the sandbox root capabilities that can modify the host
-        // user's files.
-        if map_type == "uid" && inside == 0 && outside == allowed_self {
-            return Err(format!(
-                "refusing to map inside UID 0 to calling user's host UID {allowed_self}"
-            ));
-        }
-    }
+    validate_mappings(
+        map_type == "uid",
+        &mappings,
+        (sub_start, sub_count),
+        allowed_self,
+    )
+    .map_err(|e| format!("{e} (user '{username}')"))?;
 
     // All validations passed — write the mappings.
     if map_type == "uid" {
@@ -156,6 +130,47 @@ fn run() -> Result<(), String> {
     );
     std::fs::write(&map_path, &map_data).map_err(|e| format!("write {map_path}: {e}"))?;
 
+    Ok(())
+}
+
+/// Check every `(inside, outside, count)` mapping against what the caller may
+/// map: IDs within their subordinate range `(start, count)`, plus their own
+/// host ID (`allowed_self`) as a single entry.
+///
+/// For UID maps, inside UID 0 may never be the caller's own host UID: sandbox
+/// root would then act on the host as the calling user. That rule is checked
+/// first, before the "own ID is always allowed" shortcut can accept the entry.
+fn validate_mappings(
+    is_uid_map: bool,
+    mappings: &[(u32, u32, u32)],
+    (sub_start, sub_count): (u32, u32),
+    allowed_self: u32,
+) -> Result<(), String> {
+    let sub_end = sub_start.saturating_add(sub_count).saturating_sub(1);
+    for &(inside, outside, count) in mappings {
+        if count == 0 {
+            continue;
+        }
+
+        if is_uid_map && inside == 0 && outside == allowed_self {
+            return Err(format!(
+                "refusing to map inside UID 0 to calling user's host UID {allowed_self}"
+            ));
+        }
+
+        if outside == allowed_self && count == 1 {
+            // Mapping the user's own ID (to a non-root inside ID) is allowed.
+            continue;
+        }
+
+        let max_outside = outside.saturating_add(count).saturating_sub(1);
+        if sub_count == 0 || outside < sub_start || max_outside > sub_end {
+            return Err(format!(
+                "mapping {inside} {outside} {count} is outside the allowed subordinate range \
+                 ({sub_start}-{sub_end})"
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -363,18 +378,66 @@ mod tests {
         assert!(err.contains("is not a directory"), "{err}");
     }
 
+    const SUB: (u32, u32) = (100_000, 65_536);
+    const SELF_ID: u32 = 1000;
+
     #[test]
-    fn mapping_self_uid_is_allowed() {
-        // Validate that mapping the calling user's own UID 1:1 passes.
-        // We can't call the main run() easily (needs setuid), so we test the
-        // logic by verifying parse_subordinate_range and the general flow.
-        let f = temp_subfile(&[("testuser", 100000, 65536)]);
-        let (start, count) =
-            parse_subordinate_range(f.path().to_str().unwrap(), "testuser", 9999).unwrap();
-        // Subordinate range covers the full 65536 range from 100000
-        assert!(start == 100000);
-        assert!(count >= 65536);
-        // A mapping at 1000 with count 1 should be within range
-        // (since 1000 < 65536, 100000 + 1000 + 1 - 1 = 101000 <= 165535)
+    fn isola_multi_uid_layout_is_allowed() {
+        // The exact layout isola-core requests: root and system IDs from the
+        // subordinate range, the sandbox user (1000) mapped to the host user.
+        let maps = [
+            (0, 100_000, 1),
+            (1, 100_001, 999),
+            (1000, SELF_ID, 1),
+            (1001, 101_000, 64_535),
+        ];
+        assert_eq!(validate_mappings(true, &maps, SUB, SELF_ID), Ok(()));
+        assert_eq!(validate_mappings(false, &maps, SUB, SELF_ID), Ok(()));
+    }
+
+    #[test]
+    fn inside_root_to_own_host_uid_is_refused() {
+        let err = validate_mappings(true, &[(0, SELF_ID, 1)], SUB, SELF_ID).unwrap_err();
+        assert!(err.contains("refusing to map inside UID 0"), "{err}");
+
+        // Still refused when hidden among otherwise valid entries.
+        let maps = [(1, 100_001, 999), (0, SELF_ID, 1)];
+        assert!(validate_mappings(true, &maps, SUB, SELF_ID).is_err());
+    }
+
+    #[test]
+    fn inside_root_to_own_host_gid_is_allowed() {
+        // The UID 0 rule is specific to UID maps.
+        assert_eq!(
+            validate_mappings(false, &[(0, SELF_ID, 1)], SUB, SELF_ID),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn ids_outside_the_subordinate_range_are_refused() {
+        for maps in [
+            [(0, 0, 1)],              // host root
+            [(0, 99_999, 1)],         // just below the range
+            [(0, 165_535, 2)],        // runs past the end
+            [(5, SELF_ID, 2)],        // own ID, but more than one
+            [(0, u32::MAX, 5)],       // overflowing range
+            [(1000, SELF_ID + 1, 1)], // someone else's host ID
+        ] {
+            let err = validate_mappings(true, &maps, SUB, SELF_ID).unwrap_err();
+            assert!(
+                err.contains("outside the allowed subordinate range"),
+                "{err}"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_subordinate_range_allows_only_own_id() {
+        assert_eq!(
+            validate_mappings(true, &[(1000, SELF_ID, 1)], (0, 0), SELF_ID),
+            Ok(())
+        );
+        assert!(validate_mappings(true, &[(0, 0, 1)], (0, 0), SELF_ID).is_err());
     }
 }
