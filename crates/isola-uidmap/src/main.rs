@@ -146,26 +146,29 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
-/// Resolve a username from a UID for display in error messages.
+/// Resolve the calling user's name from their **real UID**.
+///
+/// This name selects which `/etc/subuid` / `/etc/subgid` entry authorises the
+/// mappings, so it must never come from the environment: this binary is setuid
+/// root and `USER` is controlled by the caller, who could otherwise claim
+/// another user's subordinate range.
 fn resolve_username(uid: u32) -> Result<String, String> {
-    let uid_str = uid.to_string();
-
-    // Check environment first (the usual case)
-    if let Ok(user) = std::env::var("USER") {
-        return Ok(user);
-    }
-
-    // Fall back to /etc/passwd
     let passwd =
         std::fs::read_to_string("/etc/passwd").map_err(|e| format!("read /etc/passwd: {e}"))?;
-    for line in passwd.lines() {
-        let parts: Vec<&str> = line.split(':').collect();
-        if parts.len() >= 3 && parts[2] == uid_str {
-            return Ok(parts[0].to_string());
-        }
-    }
+    // Users absent from /etc/passwd (e.g. NSS/LDAP accounts) fall back to the
+    // numeric UID, which subuid/subgid files also accept as the owner field.
+    Ok(username_from_passwd(&passwd, uid).unwrap_or_else(|| uid.to_string()))
+}
 
-    Ok(uid_str)
+/// Find the login name owning `uid` in passwd-formatted `content`.
+fn username_from_passwd(content: &str, uid: u32) -> Option<String> {
+    let uid_str = uid.to_string();
+    content.lines().find_map(|line| {
+        let mut fields = line.split(':');
+        let name = fields.next()?;
+        let _password = fields.next()?;
+        (fields.next()? == uid_str && !name.is_empty()).then(|| name.to_string())
+    })
 }
 
 /// Parse /etc/subuid or /etc/subgid for the given user, returning (start, count).
@@ -248,11 +251,46 @@ mod tests {
         assert_eq!(count, 55555);
     }
 
+    const PASSWD: &str = "root:x:0:0:root:/root:/bin/bash\n\
+                          alice:x:1000:1000::/home/alice:/bin/bash\n\
+                          bob:x:1001:1001::/home/bob:/bin/bash\n";
+
     #[test]
-    fn resolve_username_from_env() {
-        // The USER env var is always set in test environment
-        let name = resolve_username(1000).unwrap();
-        assert!(!name.is_empty());
+    fn username_is_looked_up_by_uid() {
+        assert_eq!(username_from_passwd(PASSWD, 1001).as_deref(), Some("bob"));
+        assert_eq!(username_from_passwd(PASSWD, 0).as_deref(), Some("root"));
+        assert_eq!(username_from_passwd(PASSWD, 4242), None);
+    }
+
+    #[test]
+    fn username_lookup_matches_the_uid_field_only() {
+        // A GID or a UID prefix must not match.
+        let passwd = "carol:x:2000:1001::/home/carol:/bin/sh\nd:x:10010:5::/:/bin/sh\n";
+        assert_eq!(username_from_passwd(passwd, 1001), None);
+    }
+
+    #[test]
+    fn resolve_username_ignores_the_environment() {
+        // Run the lookup in a child process whose USER/LOGNAME name someone
+        // else: the result must still be derived from the real UID.
+        if std::env::var("ISOLA_UIDMAP_ENV_PROBE").is_ok() {
+            let uid = unsafe { getuid() };
+            let expected = std::fs::read_to_string("/etc/passwd")
+                .ok()
+                .and_then(|p| username_from_passwd(&p, uid))
+                .unwrap_or_else(|| uid.to_string());
+            assert_eq!(resolve_username(uid).unwrap(), expected);
+            assert_ne!(resolve_username(uid).unwrap(), "someone-else");
+            return;
+        }
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::resolve_username_ignores_the_environment"])
+            .env("ISOLA_UIDMAP_ENV_PROBE", "1")
+            .env("USER", "someone-else")
+            .env("LOGNAME", "someone-else")
+            .status()
+            .unwrap();
+        assert!(status.success());
     }
 
     #[test]
